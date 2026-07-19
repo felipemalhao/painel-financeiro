@@ -110,6 +110,7 @@ const FAMILIA=74000;
 let db={}, scenario="max", chart=null, curTab="geral";
 
 const brl=v=>(v<0?"-":"")+"R$ "+Math.abs(Math.round(v)).toLocaleString("pt-BR");
+const brl2=v=>"R$ "+Number(v).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2});
 const pct=v=>(Math.round(v*1000)/10).toLocaleString("pt-BR")+"%";
 const P=k=>{const r=(db.parametros||[]).find(x=>x.chave===k);return r?(r.valor_num!=null?Number(r.valor_num):r.valor_txt):null;};
 const nextM=m=>{const d=new Date(m);d.setMonth(d.getMonth()+1);return d.toISOString().slice(0,10);};
@@ -280,7 +281,7 @@ function viewProjecao(){
       const q=r?Number(r.quantidade):0;rev+=q*pm;tot[i]+=q*pm;
       return `<td><input type="number" data-table="projecoes" data-id="${r?r.id:''}" data-field="quantidade" value="${q}"></td>`;
     }).join('');
-    return `<tr><td>${nome}</td><td class="muted">${brl(pm)}</td>${cells}<td>${brl(rev)}</td></tr>`;
+    return `<tr><td>${nome}</td><td class="muted">${brl2(pm)}</td>${cells}<td>${brl(rev)}</td></tr>`;
   }).join('');
   return `<div class="muted" style="margin-bottom:10px">Cenário <b>${scenario}</b> (troque no topo). Edite o <b>volume</b> (unidades) por produto/mês — a receita usa o preço médio das ofertas.</div>
   <div class="card" style="overflow-x:auto"><table>
@@ -296,7 +297,7 @@ function viewOfertas(){
     const nome=((db.produtos||[]).find(p=>p.id===pid)||{}).nome||("#"+pid);
     const offs=(db.ofertas||[]).filter(o=>o.produto_id===pid).sort((a,b)=>(a.ordem||0)-(b.ordem||0));
     const sum=offs.reduce((a,o)=>a+Number(o.share_pct),0)||1;
-    html+=`<div class="sec-title">${nome} — preço médio ${brl(precoMedio(pid))}</div><div class="card" style="overflow-x:auto"><table>
+    html+=`<div class="sec-title">${nome} — preço médio ${brl2(precoMedio(pid))}</div><div class="card" style="overflow-x:auto"><table>
     <tr><th>Oferta</th><th>Preço/un</th><th>% vendas</th><th>peso</th></tr>
     ${offs.map(o=>`<tr><td>${o.rotulo}</td><td><input type="number" step="0.01" data-table="ofertas" data-id="${o.id}" data-field="preco_un" value="${Number(o.preco_un)}"></td><td><input type="number" step="1" data-table="ofertas" data-id="${o.id}" data-field="share_pct" value="${Math.round(Number(o.share_pct))}"></td><td class="muted">${Math.round(Number(o.share_pct)/sum*100)}%</td></tr>`).join('')}
     </table></div>`;

@@ -116,7 +116,7 @@ const nextM=m=>{const d=new Date(m);d.setMonth(d.getMonth()+1);return d.toISOStr
 function toast(t){const e=document.getElementById("toast");e.textContent=t;e.classList.add("show");setTimeout(()=>e.classList.remove("show"),1400);}
 
 async function loadAll(){
-  const tabs=["empresas","emprestimos","parcelamentos","parcelas","produtos","precos","custos_unitarios","estoque","custos_fixos","custos_variaveis","vendas_historicas","parametros","projecoes"];
+  const tabs=["empresas","emprestimos","parcelamentos","parcelas","produtos","precos","custos_unitarios","estoque","custos_fixos","custos_variaveis","vendas_historicas","parametros","projecoes","ofertas"];
   const out={};
   for(const t of tabs){const{data,error}=await sb.from("fin_"+t).select("*");if(error)throw error;out[t]=data;}
   return out;
@@ -150,6 +150,12 @@ function precoAtacadoBaixo(prodId){
   const list=(db.precos||[]).filter(x=>x.produto_id===prodId&&x.canal==="atacado");
   if(!list.length)return 0;return Math.min(...list.map(x=>Number(x.preco)));
 }
+function precoMedio(pid){
+  const offs=(db.ofertas||[]).filter(o=>o.produto_id===pid);
+  if(!offs.length)return precoVarejo(pid);
+  const sum=offs.reduce((a,o)=>a+Number(o.share_pct),0)||1;
+  return offs.reduce((a,o)=>a+Number(o.preco_un)*(Number(o.share_pct)/sum),0);
+}
 
 function cashflow(scn){
   const fixos=(db.custos_fixos||[]).filter(c=>c.ativo).reduce((s,c)=>s+Number(c.valor_mensal),0);
@@ -163,7 +169,7 @@ function cashflow(scn){
   const isME=anual>teto;
   let caixa=Number(P("saldo_caixa_inicial")??0);
   const rows=MONTHS.map(m=>{
-    const receita=(db.projecoes||[]).filter(p=>p.cenario===scn&&String(p.mes).slice(0,10)===m).reduce((s,p)=>s+Number(p.receita),0);
+    const receita=(db.projecoes||[]).filter(p=>p.cenario===scn&&String(p.mes).slice(0,10)===m).reduce((s,p)=>s+(p.produto_id?Number(p.quantidade)*precoMedio(p.produto_id):Number(p.receita||0)),0);
     const parcela=(db.parcelas||[]).filter(p=>p.quem_paga==="Felipe"&&String(p.vencimento)>=m&&String(p.vencimento)<nextM(m)).reduce((s,p)=>s+Number(p.valor),0);
     const imposto=isME?receita*aliq:Number(P("imposto_mei_mensal")??80);
     const gateway=receita*gw;
@@ -200,7 +206,7 @@ function dividaTotal(){
 }
 
 /* ---------- RENDER ---------- */
-const TABS=[["geral","Visão geral"],["divida","Dívida"],["projecao","Projeção"],["produtos","Produtos & margem"],["estoque","Estoque"],["custos","Custos"]];
+const TABS=[["geral","Visão geral"],["divida","Dívida"],["projecao","Projeção"],["ofertas","Ofertas & preço"],["produtos","Produtos & margem"],["estoque","Estoque"],["custos","Custos"]];
 function renderTabs(){
   document.getElementById("tabs").innerHTML=TABS.map(([k,l])=>`<button data-tab="${k}" class="${k===curTab?"active":""}">${l}</button>`).join("");
   document.querySelectorAll("#tabs button").forEach(b=>b.onclick=()=>{curTab=b.dataset.tab;renderTabs();renderView();});
@@ -211,6 +217,7 @@ function renderView(){
   if(curTab==="geral")v.innerHTML=viewGeral();
   else if(curTab==="divida")v.innerHTML=viewDivida();
   else if(curTab==="projecao")v.innerHTML=viewProjecao();
+  else if(curTab==="ofertas")v.innerHTML=viewOfertas();
   else if(curTab==="produtos")v.innerHTML=viewProdutos();
   else if(curTab==="estoque")v.innerHTML=viewEstoque();
   else if(curTab==="custos")v.innerHTML=viewCustos();
@@ -263,12 +270,36 @@ function viewDivida(){
 }
 
 function viewProjecao(){
-  const scns=[["min","Mínimo"],["med","Médio"],["max","Máximo"]];
-  let html=`<div class="muted" style="margin-bottom:10px">Edite a receita projetada por mês e cenário (R$). O fluxo de caixa recalcula sozinho.</div>`;
-  scns.forEach(([sc,lab])=>{
-    const rows=MONTHS.map(m=>(db.projecoes||[]).find(p=>p.cenario===sc&&String(p.mes).slice(0,10)===m)).filter(Boolean);
-    const tot=rows.reduce((s,r)=>s+Number(r.receita),0);
-    html+=`<div class="sec-title">${lab} — total ${brl(tot)}</div><div class="card" style="overflow-x:auto"><table><tr>${MLAB.map(l=>`<th>${l}</th>`).join("")}</tr><tr>${MONTHS.map(m=>{const r=(db.projecoes||[]).find(p=>p.cenario===sc&&String(p.mes).slice(0,10)===m);return `<td><input type="number" data-table="projecoes" data-id="${r?r.id:""}" data-field="receita" value="${r?Math.round(r.receita):0}"></td>`;}).join("")}</tr></table></div>`;
+  const prods=[...new Set((db.projecoes||[]).filter(p=>p.produto_id).map(p=>p.produto_id))];
+  const tot=MONTHS.map(()=>0);
+  const body=prods.map(pid=>{
+    const nome=((db.produtos||[]).find(p=>p.id===pid)||{}).nome||("#"+pid);
+    const pm=precoMedio(pid);let rev=0;
+    const cells=MONTHS.map((m,i)=>{
+      const r=(db.projecoes||[]).find(p=>p.produto_id===pid&&p.cenario===scenario&&String(p.mes).slice(0,10)===m);
+      const q=r?Number(r.quantidade):0;rev+=q*pm;tot[i]+=q*pm;
+      return `<td><input type="number" data-table="projecoes" data-id="${r?r.id:''}" data-field="quantidade" value="${q}"></td>`;
+    }).join('');
+    return `<tr><td>${nome}</td><td class="muted">${brl(pm)}</td>${cells}<td>${brl(rev)}</td></tr>`;
+  }).join('');
+  return `<div class="muted" style="margin-bottom:10px">Cenário <b>${scenario}</b> (troque no topo). Edite o <b>volume</b> (unidades) por produto/mês — a receita usa o preço médio das ofertas.</div>
+  <div class="card" style="overflow-x:auto"><table>
+  <tr><th>Produto</th><th>Preço méd.</th>${MLAB.map(l=>`<th>${l}</th>`).join('')}<th>Receita</th></tr>
+  ${body}
+  <tr><td colspan="2"><b>Receita/mês</b></td>${tot.map(v=>`<td><b>${brl(v)}</b></td>`).join('')}<td><b>${brl(tot.reduce((a,b)=>a+b,0))}</b></td></tr>
+  </table></div>`;
+}
+function viewOfertas(){
+  const prods=[...new Set((db.ofertas||[]).map(o=>o.produto_id))];
+  let html=`<div class="muted" style="margin-bottom:10px">O preço médio de cada produto sai do mix de ofertas. Ajuste os % (não precisa somar 100 — normaliza sozinho) e os preços; isso alimenta a projeção.</div>`;
+  prods.forEach(pid=>{
+    const nome=((db.produtos||[]).find(p=>p.id===pid)||{}).nome||("#"+pid);
+    const offs=(db.ofertas||[]).filter(o=>o.produto_id===pid).sort((a,b)=>(a.ordem||0)-(b.ordem||0));
+    const sum=offs.reduce((a,o)=>a+Number(o.share_pct),0)||1;
+    html+=`<div class="sec-title">${nome} — preço médio ${brl(precoMedio(pid))}</div><div class="card" style="overflow-x:auto"><table>
+    <tr><th>Oferta</th><th>Preço/un</th><th>% vendas</th><th>peso</th></tr>
+    ${offs.map(o=>`<tr><td>${o.rotulo}</td><td><input type="number" step="0.01" data-table="ofertas" data-id="${o.id}" data-field="preco_un" value="${Number(o.preco_un)}"></td><td><input type="number" step="1" data-table="ofertas" data-id="${o.id}" data-field="share_pct" value="${Math.round(Number(o.share_pct))}"></td><td class="muted">${Math.round(Number(o.share_pct)/sum*100)}%</td></tr>`).join('')}
+    </table></div>`;
   });
   return html;
 }
@@ -366,7 +397,8 @@ function exportExcel(){
   XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet((db.emprestimos||[]).map(e=>({Credor:e.credor,Valor:Number(e.valor),Finalidade:e.finalidade}))),"Empréstimos");
   XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet((db.parcelas||[]).map(p=>({Venc:String(p.vencimento),Valor:Number(p.valor),QuemPaga:p.quem_paga,Pago:p.pago}))),"Parcelas");
   XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet((db.estoque||[]).map(e=>({Item:e.descricao,Qtde:Number(e.quantidade),CustoUnit:Number(e.custo_unitario),Total:Number(e.valor_total),Status:e.status}))),"Estoque");
-  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet((db.projecoes||[]).map(p=>({Mês:String(p.mes).slice(0,7),Cenário:p.cenario,Receita:Number(p.receita)}))),"Projeção");
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet((db.projecoes||[]).map(p=>({Mês:String(p.mes).slice(0,7),Cenário:p.cenario,Produto:((db.produtos||[]).find(x=>x.id===p.produto_id)||{}).nome,Volume:Number(p.quantidade),PrecoMedio:p.produto_id?Math.round(precoMedio(p.produto_id)*100)/100:0,Receita:p.produto_id?Math.round(Number(p.quantidade)*precoMedio(p.produto_id)):Number(p.receita||0)}))),"Projeção");
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet((db.ofertas||[]).map(o=>({Produto:((db.produtos||[]).find(x=>x.id===o.produto_id)||{}).nome,Oferta:o.rotulo,Preco:Number(o.preco_un),SharePct:Number(o.share_pct)}))),"Ofertas");
   XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet((db.custos_fixos||[]).map(c=>({Item:c.item,Mensal:Number(c.valor_mensal),Ativo:c.ativo}))),"Custos fixos");
   XLSX.writeFile(wb,"painel_financeiro.xlsx");
 }

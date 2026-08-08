@@ -400,7 +400,7 @@ function bindInputs(){
   if(cogs)cogs.onchange=()=>saveParam("cogs_reposicao_pct",Number(cogs.value)/100);
   const av=document.getElementById("addVenda");
   if(av)av.onclick=async()=>{const{data,error}=await sb.from("fin_vendas_reais").insert({data:new Date().toISOString().slice(0,10),evento:"Novo evento",valor_bruto:0}).select();if(error){alert(error.message);return;}db.vendas_reais=(db.vendas_reais||[]).concat(data||[]);toast("adicionada");renderView();};
-  document.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{const id=Number(b.dataset.del);const{error}=await sb.from("fin_vendas_reais").delete().eq("id",id);if(error){alert(error.message);return;}db.vendas_reais=(db.vendas_reais||[]).filter(x=>x.id!==id);toast("excluída");renderView();};
+  document.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{const id=Number(b.dataset.del);const{error}=await sb.from("fin_vendas_reais").delete().eq("id",id);if(error){alert(error.message);return;}db.vendas_reais=(db.vendas_reais||[]).filter(x=>x.id!==id);toast("excluída");renderView();});
 }
 function bindSlider(){
   const s=document.getElementById("mix");if(!s)return;

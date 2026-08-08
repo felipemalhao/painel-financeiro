@@ -117,7 +117,7 @@ const nextM=m=>{const d=new Date(m);d.setMonth(d.getMonth()+1);return d.toISOStr
 function toast(t){const e=document.getElementById("toast");e.textContent=t;e.classList.add("show");setTimeout(()=>e.classList.remove("show"),1400);}
 
 async function loadAll(){
-  const tabs=["empresas","emprestimos","parcelamentos","parcelas","produtos","precos","custos_unitarios","estoque","custos_fixos","custos_variaveis","vendas_historicas","parametros","projecoes","ofertas"];
+  const tabs=["empresas","emprestimos","parcelamentos","parcelas","produtos","precos","custos_unitarios","estoque","custos_fixos","custos_variaveis","vendas_historicas","parametros","projecoes","ofertas","compras","vendas_reais"];
   const out={};
   for(const t of tabs){const{data,error}=await sb.from("fin_"+t).select("*");if(error)throw error;out[t]=data;}
   return out;
@@ -207,7 +207,7 @@ function dividaTotal(){
 }
 
 /* ---------- RENDER ---------- */
-const TABS=[["geral","Visão geral"],["divida","Dívida"],["projecao","Projeção"],["ofertas","Ofertas & preço"],["produtos","Produtos & margem"],["estoque","Estoque"],["custos","Custos"]];
+const TABS=[["geral","Visão geral"],["investimentos","Investimentos"],["vendas","Vendas reais"],["projecao","Projeção"],["ofertas","Ofertas & preço"],["divida","Dívida"],["produtos","Produtos & margem"],["estoque","Estoque"],["custos","Custos"]];
 function renderTabs(){
   document.getElementById("tabs").innerHTML=TABS.map(([k,l])=>`<button data-tab="${k}" class="${k===curTab?"active":""}">${l}</button>`).join("");
   document.querySelectorAll("#tabs button").forEach(b=>b.onclick=()=>{curTab=b.dataset.tab;renderTabs();renderView();});
@@ -216,6 +216,8 @@ function recompute(){renderView();}
 function renderView(){
   const v=document.getElementById("view");
   if(curTab==="geral")v.innerHTML=viewGeral();
+  else if(curTab==="investimentos")v.innerHTML=viewInvestimentos();
+  else if(curTab==="vendas")v.innerHTML=viewVendas();
   else if(curTab==="divida")v.innerHTML=viewDivida();
   else if(curTab==="projecao")v.innerHTML=viewProjecao();
   else if(curTab==="ofertas")v.innerHTML=viewOfertas();
@@ -234,6 +236,8 @@ function viewGeral(){
   else if(cf.payoff>=FAMILIA*0.5){verdict=`Paga ${brl(cf.payoff)} dos R$ 74k (${pct(cf.payoff/FAMILIA)}). Faltam ${brl(FAMILIA-cf.payoff)} — rolam pra depois (sem juros, é família).`;vclass="warn";}
   else{verdict=`Caixa insuficiente: paga só ${brl(cf.payoff)} dos R$ 74k. Neste cenário a quitação de novembro não fecha.`;vclass="bad";}
   const kpis=[
+    ["Investido total",brl((db.compras||[]).reduce((s,c)=>s+Number(c.valor),0)),"compras + equipamento"],
+    ["Vendas reais",brl((db.vendas_reais||[]).reduce((s,v)=>s+Number(v.valor_bruto||0),0)),"registrado na aba Vendas"],
     ["Dívida total",brl(d.total),`família ${brl(d.fam)} + broches ${brl(d.broches)}`],
     ["Estoque (custo)",brl((db.estoque||[]).reduce((s,e)=>s+Number(e.valor_total||0),0)),"insumo + revenda + a chegar"],
     ["Potencial venda",brl(pot.real),`teto ${brl(pot.teto)} · piso ${brl(pot.piso)}`],
@@ -253,6 +257,33 @@ function viewGeral(){
   </table></div>`;
 }
 
+function viewInvestimentos(){
+  const comp=(db.compras||[]).slice().sort((a,b)=>Number(b.valor)-Number(a.valor));
+  const total=comp.reduce((s,c)=>s+Number(c.valor),0)||0;
+  const cats={};comp.forEach(c=>{const k=c.categoria||"outros";cats[k]=(cats[k]||0)+Number(c.valor);});
+  const catRows=Object.entries(cats).sort((a,b)=>b[1]-a[1]).map(x=>`<tr><td>${x[0]}</td><td>${brl(x[1])}</td><td class="muted">${total?Math.round(x[1]/total*100):0}%</td></tr>`).join("");
+  const rows=comp.map(c=>`<tr><td>${c.item}</td><td class="muted">${c.categoria||""}</td><td class="muted">${c.fornecedor||""}</td><td class="muted">${c.fonte||""}</td><td>${brl(c.valor)}</td></tr>`).join("");
+  return `<div class="muted" style="margin-bottom:10px">Tudo que você já investiu — por categoria e por compra. "Fonte" = de qual empréstimo/cartão saiu.</div>
+  <div class="sec-title">Investido por categoria — total ${brl(total)}</div>
+  <div class="card" style="overflow-x:auto"><table><tr><th>Categoria</th><th>Investido</th><th>%</th></tr>${catRows}<tr><td><b>Total</b></td><td><b>${brl(total)}</b></td><td></td></tr></table></div>
+  <div class="sec-title">Cada compra</div>
+  <div class="card" style="overflow-x:auto"><table><tr><th>Item</th><th>Cat.</th><th>Fornecedor</th><th>Fonte</th><th>Valor</th></tr>${rows}</table></div>`;
+}
+function viewVendas(){
+  const vs=(db.vendas_reais||[]).slice().sort((a,b)=>String(b.data||"").localeCompare(String(a.data||"")));
+  const totalReal=vs.reduce((s,v)=>s+Number(v.valor_bruto||0),0);
+  const esc=s=>String(s==null?"":s).replace(/"/g,"&quot;");
+  const rows=vs.map(v=>`<tr>
+    <td><input type="date" data-table="vendas_reais" data-id="${v.id}" data-field="data" value="${String(v.data||"").slice(0,10)}" style="width:135px"></td>
+    <td><input type="text" data-table="vendas_reais" data-id="${v.id}" data-field="evento" value="${esc(v.evento)}" style="width:140px;text-align:left"></td>
+    <td><input type="number" step="0.01" data-table="vendas_reais" data-id="${v.id}" data-field="valor_bruto" value="${Number(v.valor_bruto||0)}"></td>
+    <td><input type="text" data-table="vendas_reais" data-id="${v.id}" data-field="obs" value="${esc(v.obs)}" style="width:170px;text-align:left"></td>
+    <td><button class="ghost" data-del="${v.id}" aria-label="excluir" style="padding:5px 9px">x</button></td></tr>`).join("");
+  return `<div class="row" style="margin-bottom:10px;justify-content:space-between"><button class="primary" id="addVenda">+ Adicionar venda</button><span class="muted">Total realizado: <b class="pos">${brl(totalReal)}</b></span></div>
+  <div class="card" style="overflow-x:auto"><table><tr><th>Data</th><th>Evento / canal</th><th>Valor R$</th><th>O que vendeu (obs)</th><th></th></tr>
+  ${rows||'<tr><td colspan="5" class="muted">Nenhuma venda registrada — clique em "+ Adicionar venda" (rua, WhatsApp, site...).</td></tr>'}
+  </table></div>`;
+}
 function viewDivida(){
   const emp=(db.emprestimos||[]).slice().sort((a,b)=>b.valor-a.valor);
   const parc=(db.parcelas||[]).slice().sort((a,b)=>String(a.vencimento).localeCompare(String(b.vencimento)));
@@ -367,6 +398,9 @@ function bindInputs(){
   });
   const cogs=document.getElementById("cogsInput");
   if(cogs)cogs.onchange=()=>saveParam("cogs_reposicao_pct",Number(cogs.value)/100);
+  const av=document.getElementById("addVenda");
+  if(av)av.onclick=async()=>{const{data,error}=await sb.from("fin_vendas_reais").insert({data:new Date().toISOString().slice(0,10),evento:"Novo evento",valor_bruto:0}).select();if(error){alert(error.message);return;}db.vendas_reais=(db.vendas_reais||[]).concat(data||[]);toast("adicionada");renderView();};
+  document.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{const id=Number(b.dataset.del);const{error}=await sb.from("fin_vendas_reais").delete().eq("id",id);if(error){alert(error.message);return;}db.vendas_reais=(db.vendas_reais||[]).filter(x=>x.id!==id);toast("excluída");renderView();};
 }
 function bindSlider(){
   const s=document.getElementById("mix");if(!s)return;

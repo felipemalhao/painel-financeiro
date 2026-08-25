@@ -107,7 +107,7 @@ const sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
 const MONTHS=["2026-06-01","2026-07-01","2026-08-01","2026-09-01","2026-10-01","2026-11-01"];
 const MLAB=["jun","jul","ago","set","out","nov"];
 const FAMILIA=74000;
-let db={}, scenario="max", chart=null, curTab="geral";
+let db={}, scenario="max", chart=null, curTab="geral", chartV=null, vendasPeriodo="semana";
 
 const brl=v=>(v<0?"-":"")+"R$ "+Math.abs(Math.round(v)).toLocaleString("pt-BR");
 const brl2=v=>"R$ "+Number(v).toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -226,6 +226,7 @@ function renderView(){
   else if(curTab==="custos")v.innerHTML=viewCustos();
   bindInputs();
   if(curTab==="geral")drawChart();
+  if(curTab==="vendas")drawVendasChart();
   if(curTab==="estoque")bindSlider();
 }
 
@@ -269,20 +270,54 @@ function viewInvestimentos(){
   <div class="sec-title">Cada compra</div>
   <div class="card" style="overflow-x:auto"><table><tr><th>Item</th><th>Cat.</th><th>Fornecedor</th><th>Fonte</th><th>Valor</th></tr>${rows}</table></div>`;
 }
+function aggVendas(period){
+  const bk={};
+  (db.vendas_reais||[]).forEach(v=>{
+    const ds=String(v.data||"").slice(0,10); if(!ds)return; let key;
+    if(period==="dia") key=ds;
+    else if(period==="mês") key=ds.slice(0,7);
+    else { const d=new Date(ds+"T00:00:00"); const wd=(d.getDay()+6)%7; d.setDate(d.getDate()-wd); key=d.toISOString().slice(0,10); }
+    bk[key]=(bk[key]||0)+Number(v.valor_bruto||0);
+  });
+  return Object.keys(bk).sort().map(k=>[k,bk[k]]);
+}
 function viewVendas(){
   const vs=(db.vendas_reais||[]).slice().sort((a,b)=>String(b.data||"").localeCompare(String(a.data||"")));
   const totalReal=vs.reduce((s,v)=>s+Number(v.valor_bruto||0),0);
+  const bm={}; vs.forEach(v=>{const m=String(v.data||"").slice(0,7); if(m)bm[m]=(bm[m]||0)+Number(v.valor_bruto||0);});
+  const ms=Object.keys(bm).sort();
+  const cur=ms.length?bm[ms[ms.length-1]]:0, prev=ms.length>1?bm[ms[ms.length-2]]:0;
+  const delta=prev?Math.round((cur-prev)/prev*100):0;
   const esc=s=>String(s==null?"":s).replace(/"/g,"&quot;");
-  const rows=vs.map(v=>`<tr>
+  const rows=vs.slice(0,40).map(v=>`<tr>
     <td><input type="date" data-table="vendas_reais" data-id="${v.id}" data-field="data" value="${String(v.data||"").slice(0,10)}" style="width:135px"></td>
-    <td><input type="text" data-table="vendas_reais" data-id="${v.id}" data-field="evento" value="${esc(v.evento)}" style="width:140px;text-align:left"></td>
+    <td><input type="text" data-table="vendas_reais" data-id="${v.id}" data-field="evento" value="${esc(v.evento)}" style="width:135px;text-align:left"></td>
     <td><input type="number" step="0.01" data-table="vendas_reais" data-id="${v.id}" data-field="valor_bruto" value="${Number(v.valor_bruto||0)}"></td>
-    <td><input type="text" data-table="vendas_reais" data-id="${v.id}" data-field="obs" value="${esc(v.obs)}" style="width:170px;text-align:left"></td>
-    <td><button class="ghost" data-del="${v.id}" aria-label="excluir" style="padding:5px 9px">x</button></td></tr>`).join("");
-  return `<div class="row" style="margin-bottom:10px;justify-content:space-between"><button class="primary" id="addVenda">+ Adicionar venda</button><span class="muted">Total realizado: <b class="pos">${brl(totalReal)}</b></span></div>
-  <div class="card" style="overflow-x:auto"><table><tr><th>Data</th><th>Evento / canal</th><th>Valor R$</th><th>O que vendeu (obs)</th><th></th></tr>
-  ${rows||'<tr><td colspan="5" class="muted">Nenhuma venda registrada — clique em "+ Adicionar venda" (rua, WhatsApp, site...).</td></tr>'}
+    <td><input type="text" data-table="vendas_reais" data-id="${v.id}" data-field="obs" value="${esc(v.obs)}" style="width:150px;text-align:left"></td>
+    <td><button class="ghost" data-del="${v.id}" style="padding:5px 9px">x</button></td></tr>`).join("");
+  return `<div class="row" style="gap:6px;margin-bottom:12px;align-items:center">
+    <span class="muted">Ver por:</span>
+    ${["dia","semana","mês"].map(p=>`<button class="ghost" data-period="${p}" style="${p===vendasPeriodo?'background:var(--accent);border-color:var(--accent);color:#fff':''}">${p}</button>`).join("")}
+    <button class="primary" id="addVenda" style="margin-left:auto">+ venda</button>
+  </div>
+  <div class="grid kpis" style="margin-bottom:1rem">
+    <div class="card kpi"><div class="label">Realizado (total)</div><div class="value">${brl(totalReal)}</div></div>
+    <div class="card kpi"><div class="label">Mês atual ${ms.length?"("+ms[ms.length-1]+")":""}</div><div class="value">${brl(cur)}</div><div class="sub ${delta>=0?"pos":"neg"}">${delta>=0?"+":""}${delta}% vs mês anterior</div></div>
+  </div>
+  <div class="card"><div style="position:relative;height:240px"><canvas id="cv" role="img" aria-label="Vendas por ${vendasPeriodo}"></canvas></div></div>
+  <div class="sec-title">Lançamentos (últimos 40)</div>
+  <div class="card" style="overflow-x:auto"><table><tr><th>Data</th><th>Evento/canal</th><th>Valor R$</th><th>Obs</th><th></th></tr>
+  ${rows||'<tr><td colspan="5" class="muted">Sem vendas ainda.</td></tr>'}
   </table></div>`;
+}
+function drawVendasChart(){
+  const ctx=document.getElementById("cv"); if(!ctx)return;
+  const agg=aggVendas(vendasPeriodo);
+  if(chartV)chartV.destroy();
+  chartV=new Chart(ctx,{type:"bar",
+    data:{labels:agg.map(a=>a[0]),datasets:[{label:"Vendas",data:agg.map(a=>Math.round(a[1])),backgroundColor:"#3b82f6",borderRadius:4}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>brl(c.parsed.y)}}},
+      scales:{x:{ticks:{color:"#9aa3b2",font:{size:10},maxRotation:60},grid:{display:false}},y:{ticks:{color:"#9aa3b2",callback:v=>"R$"+(v>=1000?(v/1000)+"k":v)},grid:{color:"rgba(255,255,255,.06)"}}}}});
 }
 function viewDivida(){
   const emp=(db.emprestimos||[]).slice().sort((a,b)=>b.valor-a.valor);
@@ -398,6 +433,7 @@ function bindInputs(){
   });
   const cogs=document.getElementById("cogsInput");
   if(cogs)cogs.onchange=()=>saveParam("cogs_reposicao_pct",Number(cogs.value)/100);
+  document.querySelectorAll("[data-period]").forEach(b=>b.onclick=()=>{vendasPeriodo=b.dataset.period;renderView();});
   const av=document.getElementById("addVenda");
   if(av)av.onclick=async()=>{const{data,error}=await sb.from("fin_vendas_reais").insert({data:new Date().toISOString().slice(0,10),evento:"Novo evento",valor_bruto:0}).select();if(error){alert(error.message);return;}db.vendas_reais=(db.vendas_reais||[]).concat(data||[]);toast("adicionada");renderView();};
   document.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{const id=Number(b.dataset.del);const{error}=await sb.from("fin_vendas_reais").delete().eq("id",id);if(error){alert(error.message);return;}db.vendas_reais=(db.vendas_reais||[]).filter(x=>x.id!==id);toast("excluída");renderView();});

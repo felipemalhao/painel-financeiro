@@ -88,6 +88,11 @@ main{padding:16px 16px 24px;max-width:760px;margin:0 auto}
 .chev{color:var(--tx3);font-size:13px;margin-left:2px;transition:transform .2s;display:inline-block}
 .ln.aberta .chev{transform:rotate(90deg);color:var(--tx2)}
 .ln.aberta{background:var(--bg3)}
+.row.aberta{background:var(--bg3)}
+.row.aberta .chev{transform:rotate(90deg);color:var(--tx2)}
+.exp+.exp>.row{border-top:1px solid var(--line)}
+.exp .gav{border-top:1px solid var(--line)}
+.card>.exp:first-child>.row{border-top:0}
 /* gaveta que abre embaixo da linha, sem pop-up */
 .gav{border-top:1px solid var(--line);background:rgba(0,0,0,.18);padding:4px 15px 12px}
 .gav .gl{display:flex;justify-content:space-between;align-items:center;gap:12px;
@@ -474,6 +479,26 @@ function linha({ic,t,s,a,b,cls,onclick}){
   if(onclick) r.onclick = onclick; else r.style.cursor="default";
   return r;
 }
+/* Qualquer linha de lista pode abrir uma gaveta com o RESUMO ali mesmo.
+   O pop-up (verTudo) fica so pro nivel 3 — "quero mais detalhe". */
+function linhaExp({ic,t,s,a,b,cls,resumo,verTudo,rotuloTudo,extra}){
+  const wrap=el("div"); wrap.className="exp";
+  const r=linha({ic,t,s,a,b,cls});
+  r.classList.add("temGav");
+  const ch=el("span","chev","›"); ch.style.marginLeft="2px";
+  r.querySelector(".rt").after(ch);
+  wrap.append(r);
+  let aberta=false, g=null;
+  r.onclick=()=>{
+    aberta=!aberta; r.classList.toggle("aberta",aberta);
+    if(aberta){
+      g=gaveta(typeof resumo==="function"?resumo():(resumo||[]), verTudo, rotuloTudo);
+      if(extra) g.insertBefore(extra(), g.firstChild);
+      wrap.append(g);
+    } else if(g){ g.remove(); g=null; }
+  };
+  return wrap;
+}
 function kpi(k,v,d,onclick){
   const b = el("button","kpi");
   b.innerHTML = `<span class="k">${k}</span><span class="v">${v}</span>${d?`<span class="d">${esc(d)}</span>`:""}`;
@@ -769,13 +794,28 @@ function vResumo(){
   ["online","evento","atacado"].forEach(g=>{
     const v=pg[g]; if(!v) return;
     const sub = g==="evento"
-      ? `${evs.length} ato${evs.length===1?"":"s"} · margem ${pct(v.r?v.m/v.r*100:0)}`
-      : `${v.n} pedidos · margem ${pct(v.r?v.m/v.r*100:0)}`;
-    const r=linha({ic:GICON[g],t:GNOME[g],s:sub,a:brl(v.r),b:brl(v.m)+" margem",
+      ? `${evs.length} ato${evs.length===1?"":"s"} · ${pct(v.r?v.m/v.r*100:0)} de margem`
+      : `${v.n} pedidos · ${pct(v.r?v.m/v.r*100:0)} de margem`;
+    const r=linhaExp({ic:GICON[g],t:GNOME[g],s:sub,a:brl(v.r),b:brl(v.m),
       cls:v.m<0?"neg":"pos",
-      onclick:()=>irPara(g==="evento"?"atos":"canal",{grupo:g,canal:null})});
-    const pb=el("div","pb"); pb.innerHTML=`<i style="width:${v.r/maxR*100}%"></i>`;
-    r.querySelector(".mid").append(pb);
+      resumo:()=>{
+        const ps=pedidosDe(f).filter(x=>grupoDe(x)===g);
+        const tk=ps.length?ps.reduce((z,x)=>z+x.bruto+x.frete_cobrado,0)/ps.length:0;
+        const cogs=ps.reduce((z,x)=>z+x.cogs,0), tx=ps.reduce((z,x)=>z+x.taxa,0);
+        const fp=ps.reduce((z,x)=>z+x.frete_pago,0);
+        const linhas=[{n:"Ticket médio",v:tk,t:brl2(tk),barra:false},
+                      {n:"Custo do produto",v:cogs,t:"−"+brl2(cogs),cls:"neg",barra:false}];
+        if(fp) linhas.push({n:"Frete que paguei",v:fp,t:"−"+brl2(fp),cls:"neg",barra:false});
+        if(tx) linhas.push({n:"Taxas",v:tx,t:"−"+brl2(tx),cls:"neg",barra:false});
+        if(g==="evento") linhas.push({n:"Atos no período",v:0,t:num(evs.length),barra:false});
+        if(g==="online") linhas.push({n:"Peças vendidas",v:0,t:num(ps.reduce((z,x)=>z+x.qtd,0)),barra:false});
+        linhas.push({n:"Margem",v:v.m,t:brl2(v.m),cls:v.m<0?"neg":"pos",barra:false});
+        return linhas;
+      },
+      verTudo:()=>irPara(g==="evento"?"atos":"canal",{grupo:g,canal:null}),
+      rotuloTudo:g==="evento"?"Abrir os atos":"Abrir a tela completa",
+      extra:()=>{ const pb=el("div","pb"); pb.style.marginBottom="8px";
+        pb.innerHTML=`<i style="width:${v.r/maxR*100}%"></i>`; return pb; }});
     cc.append(r);
   });
   if(!Object.keys(pg).length) cc.append(el("div","empty","Sem vendas nesse período."));
@@ -827,10 +867,20 @@ function vResumo(){
   const cq=el("div","card");
   cq.append(linha({ic:"📈",t:"Sobrou no período",s:"depois de tudo, inclusive fixos",
     a:`<span class="${liquido<0?"neg":"pos"}">${brl(liquido)}</span>`}));
-  cq.append(linha({ic:"📦",t:"Parado em estoque",s:"comprado e ainda não vendido",
-    a:brl(emEstoque),onclick:detEstoque}));
-  cq.append(linha({ic:"🏗️",t:"Já investido no total",s:"estoque + equipamento + embalagem",
-    a:brl(inv),onclick:detInvestimento}));
+  cq.append(linhaExp({ic:"📦",t:"Parado em estoque",s:"comprado e ainda não vendido",
+    a:brl(emEstoque),
+    resumo:()=>{ const fam={};
+      D.estoque.forEach(x=>{ const k=familia(x.descricao); fam[k]=(fam[k]||0)+(+x.valor_total||0); });
+      return Object.entries(fam).sort((a,b)=>b[1]-a[1])
+        .map(([k,v])=>({n:(FICON[k]||"📦")+" "+k,v})); },
+    verTudo:detEstoque, rotuloTudo:"Ver lote a lote"}));
+  cq.append(linhaExp({ic:"🏗️",t:"Já investido no total",s:"estoque + equipamento + embalagem",
+    a:brl(inv),
+    resumo:()=>{ const cat={};
+      D.compras.forEach(x=>{ const k=x.categoria||"outros"; cat[k]=(cat[k]||0)+x.valor; });
+      return Object.entries(cat).sort((a,b)=>b[1]-a[1])
+        .map(([k,v])=>({n:(ICONC[k]||"📦")+" "+k,v})); },
+    verTudo:detInvestimento, rotuloTudo:"Ver compra a compra"}));
   cq.append(el("div","note","O lucro acima é <b>de verdade</b>, mas boa parte não está em dinheiro: virou estoque. Enquanto o estoque não vende, o caixa aperta mesmo com a operação no azul."));
   sq.append(cq); m.append(sq);
 
@@ -1131,13 +1181,26 @@ function vAtos(){
   const c=el("div","card");
   const maxB=Math.max(...evs.map(e=>e.bruto),1);
   evs.forEach(e=>{
-    const r=linha({ic:e.avulso?"·":/confirmar/i.test(e.nome)?"❓":"📍",t:e.nome,
+    const r=linhaExp({ic:e.avulso?"·":/confirmar/i.test(e.nome)?"❓":"📍",t:e.nome,
       s:e.avulso?`${e.n} vendas soltas`
         :`${dbr(e.data)}${e.vendedor?" · "+e.vendedor:""}${e.local?" · "+e.local:""} · ticket ${brl2(e.n?e.bruto/e.n:0)}`,
       a:brl(e.bruto),b:brl(e.resultado)+" sobrou",cls:e.resultado<0?"neg":"pos",
-      onclick:()=>detEvento(e)});
-    const pb=el("div","pb"); pb.innerHTML=`<i style="width:${e.bruto/maxB*100}%"></i>`;
-    r.querySelector(".mid").append(pb);
+      resumo:()=>{
+        const L=[{n:"Faturamento",v:e.bruto,t:brl2(e.bruto),barra:false},
+                 {n:"Custo do produto",v:e.cogs,t:"−"+brl2(e.cogs),cls:"neg",barra:false}];
+        if(e.taxa) L.push({n:"Taxas de cartão/Pix",v:e.taxa,t:"−"+brl2(e.taxa),cls:"neg",barra:false});
+        if(e.com)  L.push({n:`Comissão${e.vendedor?" — "+e.vendedor:""} (${pct(e.pct)})`,
+                           v:e.com,t:"−"+brl2(e.com),cls:"neg",barra:false});
+        if(e.extra)L.push({n:e.extraDesc||"Despesas do dia",v:e.extra,t:"−"+brl2(e.extra),cls:"neg",barra:false});
+        L.push({n:"Sobrou",v:e.resultado,t:brl2(e.resultado),cls:e.resultado<0?"neg":"pos",barra:false});
+        Object.entries(e.porCanal).sort((x,y)=>y[1]-x[1]).forEach(([k,v2])=>
+          L.push({n:"↳ "+(NOME[k]||k),v:v2,t:brl2(v2),barra:false}));
+        return L;
+      },
+      verTudo:e.avulso?null:()=>detEvento(e),
+      rotuloTudo:/confirmar/i.test(e.nome)?"Dar nome e ajustar":"Editar o ato",
+      extra:()=>{ const pb=el("div","pb"); pb.style.marginBottom="8px";
+        pb.innerHTML=`<i style="width:${e.bruto/maxB*100}%"></i>`; return pb; }});
     c.append(r);
   });
   if(!evs.length) c.append(el("div","empty","Nenhum ato nesse período."));
@@ -1458,25 +1521,48 @@ function vMais(){
   const s1=el("div","sec"); s1.append(el("h2",null,"Dívida",`<span class="r">${brl(saldo+aPagar)}</span>`));
   const c1=el("div","card");
   D.emprestimos.slice().sort((a,b)=>(+b.saldo||0)-(+a.saldo||0)).forEach(e=>
-    c1.append(linha({ic:"🤝",t:e.credor,s:e.finalidade||"sem juros, sem prazo",
+    c1.append(linhaExp({ic:"🤝",t:e.credor,s:e.finalidade||"sem juros, sem prazo",
       a:brl(+e.saldo||0),b:e.quitar_em?"quitar "+dbr(e.quitar_em):"",
-      onclick:()=>detEmprestimo(e)})));
-  c1.append(linha({ic:"💳",t:"Parcelas a vencer",s:`${naoPagas.length} parcelas no cartão`,
-    a:brl(aPagar),onclick:detParcelas}));
+      resumo:()=>[
+        {n:"Saldo devedor",v:+e.saldo||0,t:brl2(+e.saldo||0),barra:false},
+        {n:"Valor original",v:+e.valor||0,t:brl2(+e.valor||0),barra:false},
+        {n:"Juros",v:0,t:e.juros_am?pct(+e.juros_am):"sem juros",barra:false},
+        {n:"Prazo",v:0,t:e.sem_prazo?"sem prazo":(e.quitar_em?dbr(e.quitar_em):"—"),barra:false},
+        {n:"Para quê",v:0,t:e.finalidade||"—",barra:false},
+      ], verTudo:()=>detEmprestimo(e), rotuloTudo:"Ver detalhe"})));
+  c1.append(linhaExp({ic:"💳",t:"Parcelas a vencer",s:`${naoPagas.length} parcelas no cartão`,
+    a:brl(aPagar),
+    resumo:()=>{ const pm={};
+      naoPagas.forEach(x=>{ const k=(x.vencimento||"").slice(0,7); pm[k]=(pm[k]||0)+(+x.valor||0); });
+      return Object.entries(pm).sort().slice(0,6)
+        .map(([k,v])=>({n:MES[+k.slice(5,7)-1]+"/"+k.slice(2,4),v})); },
+    verTudo:detParcelas, rotuloTudo:"Ver todas as parcelas"}));
   s1.append(c1); m.append(s1);
 
   const inv=D.compras.reduce((s,c)=>s+c.valor,0);
   const vEst=D.estoque.reduce((s,e)=>s+(+e.valor_total||0),0);
   const s2=el("div","sec"); s2.append(el("h2",null,"Onde o dinheiro está"));
   const c2=el("div","card");
-  c2.append(linha({ic:"🏗️",t:"Investimento total",s:"estoque + equipamento + embalagem",
-    a:brl(inv),onclick:detInvestimento}));
-  c2.append(linha({ic:"📦",t:"Estoque a custo",s:"o que ainda tem pra vender",
-    a:brl(vEst),onclick:detEstoque}));
+  c2.append(linhaExp({ic:"🏗️",t:"Investimento total",s:"estoque + equipamento + embalagem",
+    a:brl(inv),
+    resumo:()=>{ const cat={};
+      D.compras.forEach(x=>{ const k=x.categoria||"outros"; cat[k]=(cat[k]||0)+x.valor; });
+      return Object.entries(cat).sort((a,b)=>b[1]-a[1])
+        .map(([k,v])=>({n:(ICONC[k]||"📦")+" "+k,v})); },
+    verTudo:detInvestimento, rotuloTudo:"Ver compra a compra"}));
+  c2.append(linhaExp({ic:"📦",t:"Estoque a custo",s:"o que ainda tem pra vender",
+    a:brl(vEst),
+    resumo:()=>{ const fam={};
+      D.estoque.forEach(x=>{ const k=familia(x.descricao); fam[k]=(fam[k]||0)+(+x.valor_total||0); });
+      return Object.entries(fam).sort((a,b)=>b[1]-a[1])
+        .map(([k,v])=>({n:(FICON[k]||"📦")+" "+k,v})); },
+    verTudo:detEstoque, rotuloTudo:"Ver lote a lote"}));
   const eq=D.compras.filter(c=>(c.categoria||"")==="equipamento");
-  if(eq.length) c2.append(linha({ic:"🖥️",t:"Equipamentos",
+  if(eq.length) c2.append(linhaExp({ic:"🖥️",t:"Equipamentos",
     s:`${eq.length} itens · não vira custo de venda`,
-    a:brl(eq.reduce((s,c)=>s+c.valor,0)),onclick:detEquipamento}));
+    a:brl(eq.reduce((s,c)=>s+c.valor,0)),
+    resumo:()=>eq.slice().sort((a,b)=>b.valor-a.valor).map(x=>({n:x.item,v:x.valor})),
+    verTudo:detEquipamento, rotuloTudo:"Ver detalhe"}));
   s2.append(c2); m.append(s2);
 
   const desc=desconhecidos();

@@ -1,0 +1,8 @@
+# repo e PUBLICO (GitHub Pages) — nada de dado de negocio ou segredo aqui
+.senha
+ads.json
+sync.py
+*.log
+__pycache__/
+
+.mp_cache.json

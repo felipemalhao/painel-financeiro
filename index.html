@@ -90,12 +90,15 @@ main{padding:16px 16px 24px;max-width:760px;margin:0 auto}
 .ln.aberta{background:var(--bg3)}
 /* gaveta que abre embaixo da linha, sem pop-up */
 .gav{border-top:1px solid var(--line);background:rgba(0,0,0,.18);padding:4px 15px 12px}
-.gav .gl{display:flex;justify-content:space-between;gap:12px;padding:7px 0;font-size:13px;
+.gav .gl{display:flex;justify-content:space-between;align-items:center;gap:12px;
+  padding:12px 0;min-height:44px;font-size:13px;width:100%;text-align:left;
   border-bottom:1px solid rgba(255,255,255,.05)}
+button.gl:active{background:rgba(255,255,255,.04)}
+button.gl .nm::after{content:" ›";color:var(--tx3)}
 .gav .gl:last-of-type{border-bottom:0}
 .gav .gl b{font-variant-numeric:tabular-nums;font-weight:620}
 .gav .gl .nm{color:var(--tx2);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.gav .mais{margin-top:8px;font-size:12.5px;color:var(--blue);font-weight:600;padding:6px 0}
+.gav .mais{margin-top:8px;font-size:13px;color:var(--blue);font-weight:600;padding:12px 0;min-height:44px;width:100%;text-align:left}
 .gav .barra{height:3px;border-radius:2px;background:var(--bg3);margin-top:5px;overflow:hidden}
 .gav .barra i{display:block;height:100%;background:var(--blue);border-radius:2px}
 
@@ -252,6 +255,16 @@ const MES  = ["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov",
 const esc  = s => String(s??"").replace(/[<>&]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]));
 function toast(m){ const t=$("#toast"); t.textContent=m; t.classList.add("on"); clearTimeout(t._t);
   t._t=setTimeout(()=>t.classList.remove("on"),2200); }
+/* acao destrutiva num toque merece uma saida: 6s pra desfazer */
+function toastDesfazer(msg, undo){
+  const t=$("#toast"); t.innerHTML="";
+  t.append(document.createTextNode(msg+"  "));
+  const b=el("button",null,"Desfazer");
+  b.style.cssText="color:#0d0f14;font-weight:800;text-decoration:underline;padding:4px 6px";
+  b.onclick=()=>{ t.classList.remove("on"); clearTimeout(t._t); undo(); };
+  t.append(b); t.classList.add("on"); clearTimeout(t._t);
+  t._t=setTimeout(()=>t.classList.remove("on"),6000);
+}
 function segunda(s){ const d=new Date(s+"T12:00:00"); const w=(d.getDay()+6)%7;
   d.setDate(d.getDate()-w); return iso(d); }
 
@@ -264,11 +277,14 @@ const D = { pedidos:[], itens:[], itensPor:{}, ads:[], fixos:[], produtos:[],
 /* ============================================================ carga ===== */
 async function carregar(){
   /* PostgREST corta em 1000 linhas por resposta — busca em paginas ate acabar */
+  /* range() so e deterministico com ORDER BY total. Ordenar por "data" (que repete
+     centenas de vezes num ato) fazia a mesma linha cair em duas paginas — ou sumir. */
   const q = async (t,ord)=>{
     const PAG=1000; let de=0, tudo=[];
     for(;;){
       let r = sb.from(t).select("*");
       if(ord) r = r.order(ord);
+      r = r.order("id");                       // desempate estavel, sempre
       const {data,error} = await r.range(de,de+PAG-1);
       if(error) throw error;
       tudo = tudo.concat(data||[]);
@@ -278,7 +294,7 @@ async function carregar(){
     }
   };
   const [pedidos,itens,ads,fixos,produtos,emp,parc,est,par,compras,eventos] = await Promise.all([
-    q("fin_pedidos","data"), q("fin_pedido_itens"), q("fin_ads","data"),
+    q("fin_pedidos","data"), q("fin_pedido_itens","pedido_id"), q("fin_ads","data"),
     q("fin_custos_fixos"), q("fin_produtos"), q("fin_emprestimos"),
     q("fin_parcelas","vencimento"), q("fin_estoque"), q("fin_parametros"),
     q("fin_compras","data"), q("fin_eventos","data"),
@@ -314,15 +330,27 @@ function faixa(){
 function faixaAnterior(){
   if(S.periodo==="tudo") return null;
   const [a,b] = faixa();
+  if(S.periodo==="mes"){
+    /* mes contra mes: mesmo pedaco do mes anterior (dia 1 ate o mesmo dia) */
+    const d=new Date(a+"T12:00:00"); d.setMonth(d.getMonth()-1);
+    const ini=iso(new Date(d.getFullYear(),d.getMonth(),1));
+    const ultimo=new Date(d.getFullYear(),d.getMonth()+1,0).getDate();
+    const fim=iso(new Date(d.getFullYear(),d.getMonth(),Math.min(+b.slice(8,10),ultimo)));
+    return [ini,fim,MES[d.getMonth()]];
+  }
   const d1=new Date(a+"T12:00:00"), d2=new Date(b+"T12:00:00");
   const dias = Math.round((d2-d1)/864e5)+1;
   const f2=new Date(d1); f2.setDate(f2.getDate()-1);
   const f1=new Date(f2); f1.setDate(f1.getDate()-dias+1);
   return [iso(f1),iso(f2),"anterior"];
 }
-/* status "pendente" = Pix direto ainda nao classificado. Fica fora de TODO total
-   ate voce dizer o que e, na aba Triagem. */
-const vale = p => p.status!=="pendente" && p.canal!=="a_classificar";
+/* LISTA BRANCA, nao lista negra: so entra na conta o que é venda reconhecida e paga.
+   Assim empréstimo, repasse, "ignorar" e canal desconhecido ficam de fora por padrão —
+   o contrário (barrar caso a caso) deixava emprestimo de familia virar receita de ato. */
+const CANAL_VENDA = new Set(["site","checkout_mp","pix_qr","maquininha","dinheiro","atacado"]);
+const vale = p => p.status==="pago" && CANAL_VENDA.has(p.canal);
+const desconhecidos = () => D.pedidos.filter(p=>p.status==="pago" && !CANAL_VENDA.has(p.canal)
+  && p.canal!=="a_classificar" && p.canal!=="nao_venda");
 const noPer = (p,f) => vale(p) && p.data>=f[0] && p.data<=f[1]
   && (!S.grupo || grupoDe(p)===S.grupo) && (!S.canal || p.canal===S.canal);
 const pedidosDe = f => D.pedidos.filter(p=>noPer(p,f));
@@ -361,16 +389,27 @@ function totais(f){
   t.lucro   = t.margem - t.ads;
   t.mg      = t.receita ? t.lucro/t.receita*100 : 0;
   t.ticket  = t.n ? t.caixa/t.n : 0;
-  t.roas    = t.ads ? t.caixa/t.ads : 0;
+  /* ROAS/CAC so fazem sentido contra o que o anuncio move: o ONLINE.
+     Dividir o caixa dos atos pelos ADs dava um ROAS fantasioso. */
+  t.caixaOnline = ps.filter(p=>grupoDe(p)==="online")
+    .reduce((a,p)=>a+p.bruto-p.desconto+p.frete_cobrado,0);
+  t.nOnline = ps.filter(p=>grupoDe(p)==="online").length;
+  t.roas    = t.ads ? t.caixaOnline/t.ads : 0;
+  t.cac     = t.nOnline && t.ads ? t.ads/t.nOnline : 0;
   return t;
 }
+/* cada custo fixo tem vigencia propria: a ajudante nao pode ser cobrada em mes
+   nenhum antes de ela existir. Sem vigencia, vale a partir da 1a venda. */
+function diasDeVigencia(x, f){
+  const primeiro = D.pedidos.length ? D.pedidos.reduce((a,p)=>p.data<a?p.data:a,D.pedidos[0].data) : f[0];
+  const ini = [f[0], x.inicio || primeiro, primeiro].sort().pop();
+  const fim = [f[1], x.fim || f[1]].sort()[0];
+  if(fim < ini) return 0;
+  return Math.round((new Date(fim+"T12:00:00")-new Date(ini+"T12:00:00"))/864e5)+1;
+}
+function fixoDe(x, f){ return (+x.valor_mensal||0)/30*diasDeVigencia(x,f); }
 function fixoNoPeriodo(f){
-  /* em "Tudo" a faixa comeca em 2000 — usa a data do 1o pedido, senao o rateio explode */
-  const primeiro = D.pedidos.length ? D.pedidos.reduce((a,p)=>p.data<a?p.data:a, D.pedidos[0].data) : f[0];
-  const ini = f[0] > primeiro ? f[0] : primeiro;
-  const dias = Math.max(1, Math.round((new Date(f[1]+"T12:00:00")-new Date(ini+"T12:00:00"))/864e5)+1);
-  const mensal = D.fixos.filter(x=>x.ativo!==false).reduce((s,x)=>s+(+x.valor_mensal||0),0);
-  return mensal/30*dias;
+  return D.fixos.filter(x=>x.ativo!==false).reduce((s,x)=>s+fixoDe(x,f),0);
 }
 
 /* ==================================================== agrupamento ======= */
@@ -386,8 +425,20 @@ function serie(f){
     const k = chaveGran(a.data);
     (out[k] ||= {k,receita:0,margem:0,n:0,ads:0}); out[k].ads+=a.gasto;
   });
+  /* despesa do ato (transporte, quem filmou) entra no dia dela */
+  D.eventos.filter(e=>e.data>=f[0]&&e.data<=f[1]&&(+e.custo_extra||0)>0).forEach(e=>{
+    const k=chaveGran(e.data); (out[k] ||= {k,receita:0,margem:0,n:0,ads:0,fixo:0,extra:0});
+    out[k].extra=(out[k].extra||0)+(+e.custo_extra||0);
+  });
   const arr = Object.values(out).sort((x,y)=>x.k<y.k?-1:1);
-  arr.forEach(x=>x.lucro=x.margem-x.ads);
+  /* o hero desconta custo fixo; o grafico tambem tem que descontar, senao sao
+     dois numeros chamados "lucro" com valores diferentes pro mesmo dia */
+  const diario = somaFixos()/30;
+  arr.forEach(x=>{
+    x.extra = x.extra||0;
+    x.fixo  = diario * (S.gran==="dia"?1 : S.gran==="semana"?7 : 30);
+    x.lucro = x.margem - x.ads - x.fixo - x.extra;
+  });
   return arr;
 }
 function rotulo(k){
@@ -437,6 +488,19 @@ function grupoChips(itens, atual, cb, alt){
   });
   return w;
 }
+/* navegacao com origem: o "voltar" tem que levar de onde voce veio, nao pro Resumo */
+function irPara(view, extra){
+  S.voltar = {view:S.view, grupo:S.grupo, canal:S.canal, titulo:(VIEW(S.view)||{}).t||"trás"};
+  S.view=view; Object.assign(S, extra||{}); S.sel=null; window.scrollTo(0,0); render();
+}
+function btVoltar(){
+  const b=el("button","btn g","‹ Voltar para "+(S.voltar?.titulo||"o resumo"));
+  b.style.marginBottom="12px";
+  b.onclick=()=>{ const v=S.voltar||{view:"resumo",grupo:null,canal:null};
+    S.view=v.view; S.grupo=v.grupo; S.canal=v.canal; S.voltar=null;
+    window.scrollTo(0,0); render(); };
+  return b;
+}
 function abrir(titulo, conteudo){
   $("#shTit").textContent = titulo;
   const b = $("#shBody"); b.innerHTML=""; b.append(conteudo);
@@ -467,7 +531,7 @@ const GRUPO = {site:"online", checkout_mp:"online",
 const GNOME = {online:"Vendas online", evento:"Atos e eventos", atacado:"Atacado (WhatsApp)"};
 const GICON = {online:"🛒", evento:"📍", atacado:"📦"};
 const GSUB  = {online:["site","checkout_mp"], evento:["pix_qr","maquininha","dinheiro"], atacado:["atacado"]};
-const grupoDe = p => GRUPO[p.canal] || "evento";
+const grupoDe = p => GRUPO[p.canal] || null;
 const temAds  = g => !g || g==="online";
 
 /* transportadora-mae: o que importa primeiro e Correios x Melhor Envio, nao o servico */
@@ -502,9 +566,9 @@ function gaveta(itens, verTudo, rotuloTudo){
   const g = el("div","gav");
   const max = Math.max(...itens.map(i=>Math.abs(i.v||0)),1);
   itens.forEach(i=>{
-    const l = el("div","gl");
+    const l = el(i.onclick?"button":"div","gl");
     l.innerHTML = `<span class="nm">${esc(i.n)}</span><b class="${i.cls||""}">${i.t||brl(i.v)}</b>`;
-    if(i.onclick){ l.style.cursor="pointer"; l.onclick=e=>{e.stopPropagation(); i.onclick();}; }
+    if(i.onclick) l.onclick=e=>{e.stopPropagation(); i.onclick();};
     g.append(l);
     if(i.barra!==false){
       const b=el("div","barra"); b.innerHTML=`<i style="width:${Math.abs(i.v||0)/max*100}%"></i>`;
@@ -614,20 +678,22 @@ function vResumo(){
   const hero=el("div","card"), h=el("div","hero");
   const ant=faixaAnterior(), ta=ant?totais(ant):null;
   const liqAnt = ta ? ta.lucro-fixoNoPeriodo(ant) : null;
-  const varia = liqAnt ? (liquido-liqAnt)/Math.abs(liqAnt)*100 : null;
+  const varia = (liqAnt!=null && liqAnt!==0) ? (liquido-liqAnt)/Math.abs(liqAnt)*100 : null;
   const evs=eventosDe(f);
   const nVendas=pedidosDe(f).filter(p=>grupoDe(p)!=="evento").length;
-  const mgLiq = t.receita ? liquido/t.receita*100 : 0;
+  /* margem sempre sobre o que entrou de fato (caixa), nao sobre a receita de exibicao —
+     senao trocar o modo de frete mudava a margem sem nada ter mudado no negocio */
+  const mgLiq = t.caixa ? liquido/t.caixa*100 : 0;
   h.innerHTML = `<div class="lbl">💰 Sobrou no período <span class="tag">${f[2]}</span></div>
     <div class="big ${liquido<0?"neg":"pos"}">${brl(liquido)}</div>
     <div class="meta">
       <span class="pill ${mgLiq<0?"neg":"pos"}">margem ${pct(mgLiq)}</span>
       <span class="pill">${num(nVendas)} vendas${evs.length?" · "+num(evs.length)+" atos":""}</span>
-      ${varia!=null?`<span class="pill ${varia<0?"neg":"pos"}">${varia>0?"▲":"▼"} ${pct(Math.abs(varia))} vs anterior</span>`:""}
+      ${varia!=null?`<span class="pill ${varia<0?"neg":"pos"}">${varia>0?"▲":"▼"} ${pct(Math.abs(varia))} vs ${ant&&ant[2]?ant[2]:"anterior"}</span>`:""}
     </div>`;
   hero.append(h);
 
-  const R=t.receita||1, wf=el("div","wf");
+  const R=t.caixa||1, wf=el("div","wf");
   const pg=porGrupo(f);
 
   wf.append(lnCascata({dot:"var(--blue)",nome:"Receita",
@@ -636,9 +702,12 @@ function vResumo(){
        : "produtos + frete cobrado", val:t.receita, base:R,
     itens:["online","evento","atacado"].filter(g=>pg[g]).map(g=>({
       n:(GICON[g]||"")+" "+GNOME[g], v:pg[g].r,
-      onclick:()=>{S.grupo=g; S.view=g==="evento"?"atos":"canal"; window.scrollTo(0,0); render();}})),
+      onclick:()=>irPara(g==="evento"?"atos":"canal",{grupo:g,canal:null})})),
     verTudo:()=>detReceita(f), rotuloTudo:"Abrir composição"}));
 
+  if(S.frete==="produto" && t.freteCob)
+    wf.append(lnCascata({dot:"var(--blue)",nome:"Frete cobrado do cliente",
+      sub:"entrou junto, mas fora do preço do produto",val:t.freteCob,base:R}));
   const pf=porFamilia(f);
   wf.append(lnCascata({dot:"var(--amber)",nome:"Custo do produto",sub:"o que saiu do estoque",
     val:t.cogs,neg:true,base:R,
@@ -679,12 +748,12 @@ function vResumo(){
 
   /* custos fixos DENTRO da cascata — a funcionaria tem que aparecer na conta geral */
   if(fx>0){
-    const mensal=somaFixos(), prop=mensal?fx/mensal:0;
+    const mensal=somaFixos();
     wf.append(lnCascata({dot:"var(--tx2)",nome:"Custos fixos",
       sub:`${brl(mensal)}/mês rateados no período`,val:fx,neg:true,base:R,
       itens:D.fixos.filter(x=>x.ativo!==false)
-        .sort((a,b)=>(+b.valor_mensal||0)-(+a.valor_mensal||0))
-        .map(x=>({n:x.item,v:(+x.valor_mensal||0)*prop})),
+        .map(x=>({n:x.item+" · "+Math.round(diasDeVigencia(x,f))+" dias", v:fixoDe(x,f)}))
+        .sort((a,b)=>b.v-a.v),
       verTudo:()=>{S.view="custos";window.scrollTo(0,0);render();},rotuloTudo:"Editar custos fixos"}));
   }
 
@@ -704,7 +773,7 @@ function vResumo(){
       : `${v.n} pedidos · margem ${pct(v.r?v.m/v.r*100:0)}`;
     const r=linha({ic:GICON[g],t:GNOME[g],s:sub,a:brl(v.r),b:brl(v.m)+" margem",
       cls:v.m<0?"neg":"pos",
-      onclick:()=>{S.grupo=g;S.view=g==="evento"?"atos":"canal";window.scrollTo(0,0);render();}});
+      onclick:()=>irPara(g==="evento"?"atos":"canal",{grupo:g,canal:null})});
     const pb=el("div","pb"); pb.innerHTML=`<i style="width:${v.r/maxR*100}%"></i>`;
     r.querySelector(".mid").append(pb);
     cc.append(r);
@@ -720,8 +789,8 @@ function vResumo(){
     on.length?`${num(on.length)} pedidos · ${num(t.qtd)} peças`:"sem pedidos"));
   gg.append(kpi("📍 Média por ato",evs.length?brl2(evs.reduce((s,e)=>s+e.bruto,0)/evs.length):"—",
     evs.length?`${num(evs.length)} atos no período`:"sem atos"));
-  gg.append(kpi("📣 CAC",on.length&&t.ads?brl2(t.ads/on.length):"—","ADs por pedido online"));
-  gg.append(kpi("🔁 ROAS",t.roas?t.roas.toFixed(2)+"x":"—","o que entrou ÷ ADs"));
+  gg.append(kpi("📣 CAC",t.cac?brl2(t.cac):"—","ADs por pedido online"));
+  gg.append(kpi("🔁 ROAS",t.roas?t.roas.toFixed(2)+"x":"—","receita online ÷ ADs"));
   g.append(gg); m.append(g);
 
   const gs=el("div","sec");
@@ -748,7 +817,7 @@ function vResumo(){
     const c=el("div","card");
     c.append(linha({ic:"❓",t:`${pend.length} Pix diretos sem classificar`,
       s:`${brl(pend.reduce((a,p)=>a+p.bruto,0))} parados fora da conta`,a:"›",
-      onclick:()=>{S.view="triagem";window.scrollTo(0,0);render();}}));
+      onclick:()=>irPara("triagem")}));
     s.append(c); m.append(s);
   }
 
@@ -785,7 +854,7 @@ function alertas(f,t){
   const semNome=eventosDe(f).filter(e=>/confirmar/i.test(e.nome));
   if(semNome.length) out.push(linha({ic:"📍",t:`${semNome.length} atos sem nome`,
     s:"a lista de eventos está defasada",a:"›",
-    onclick:()=>{S.view="atos";window.scrollTo(0,0);render();}}));
+    onclick:()=>irPara("atos",{grupo:"evento"})}));
   return out;
 }
 
@@ -876,14 +945,16 @@ function detProdutos(f){
   abrir("Produtos vendidos",c);
 }
 function abrirPeriodo(d){
-  const ps=D.pedidos.filter(p=>vale(p)&&chaveGran(p.data)===d.k
-    &&(!S.grupo||grupoDe(p)===S.grupo)).sort((a,b)=>b.bruto-a.bruto);
+  const f=faixa();
+  const ps=D.pedidos.filter(p=>noPer(p,f)&&chaveGran(p.data)===d.k).sort((a,b)=>b.bruto-a.bruto);
   const c=el("div");
   c.append(dl([
     ["Receita",brl2(d.receita)],
     ["Margem de contribuição",brl2(d.margem)],
-    d.ads?["ADs no período","−"+brl2(d.ads),"neg"]:null,
-    ["<b>Lucro</b>",`<b class="${d.lucro<0?"neg":"pos"}">${brl2(d.lucro)}</b>`],
+    d.ads?["ADs","−"+brl2(d.ads),"neg"]:null,
+    d.extra?["Despesas de ato","−"+brl2(d.extra),"neg"]:null,
+    d.fixo?["Custos fixos rateados","−"+brl2(d.fixo),"neg"]:null,
+    ["<b>Sobrou</b>",`<b class="${d.lucro<0?"neg":"pos"}">${brl2(d.lucro)}</b>`],
     ["Vendas",num(d.n)],
   ]));
   const box=el("div","card"); box.style.marginTop="14px";
@@ -936,10 +1007,7 @@ function vCanal(){
   const f=faixa(), g=S.grupo, t=totais(f), m=el("div");
   const ps=pedidosDe(f);
 
-  const volta=el("button","btn g","‹ Voltar ao resumo");
-  volta.style.marginBottom="12px";
-  volta.onclick=()=>{S.grupo=null;S.canal=null;S.view="resumo";window.scrollTo(0,0);render();};
-  m.append(volta);
+  if(S.voltar) m.append(btVoltar());
 
   const hero=el("div","card"), h=el("div","hero");
   h.innerHTML=`<div class="lbl">${GICON[g]} ${GNOME[g]} <span class="tag">${f[2]}</span></div>
@@ -950,12 +1018,14 @@ function vCanal(){
       <span class="pill">ticket ${brl2(t.ticket)}</span>
     </div>`;
   hero.append(h);
-  const R=t.receita||1, wf=el("div","wf");
+  const R=t.caixa||1, wf=el("div","wf");
   wf.append(lnCascata({dot:"var(--blue)",nome:"Receita",val:t.receita,base:R}));
+  if(S.frete==="produto" && t.freteCob)
+    wf.append(lnCascata({dot:"var(--blue)",nome:"Frete cobrado do cliente",val:t.freteCob,base:R}));
   if(t.cogs) wf.append(lnCascata({dot:"var(--amber)",nome:"Custo do produto",val:t.cogs,neg:true,base:R,
     itens:Object.entries(porFamilia(f)).sort((a,b)=>b[1].c-a[1].c)
       .map(([k,v])=>({n:(FICON[k]||"📦")+" "+k,v:v.c})),verTudo:()=>detProdutos(f)}));
-  if(t.fretePago) wf.append(lnCascata({dot:"var(--purple)",nome:"Frete que eu paguei",
+  if(t.fretePago && S.frete!=="liquido") wf.append(lnCascata({dot:"var(--purple)",nome:"Frete que eu paguei",
     sub:`cobrei ${brl(t.freteCob)}`,val:t.fretePago,neg:true,base:R,
     itens:Object.entries(porTransportadora(f)).sort((a,b)=>b[1].p-a[1].p)
       .map(([k,v])=>({n:k,v:v.p})),verTudo:()=>detFrete(f)}));
@@ -963,7 +1033,7 @@ function vCanal(){
   if(t.comissao+t.custoEvento) wf.append(lnCascata({dot:"var(--tx3)",nome:"Custo dos atos",
     val:t.comissao+t.custoEvento,neg:true,base:R}));
   if(t.ads) wf.append(lnCascata({dot:"var(--red)",nome:"Anúncios (ADs)",
-    sub:`ROAS ${t.roas.toFixed(1)}x · CAC ${brl2(t.n?t.ads/t.n:0)}`,val:t.ads,neg:true,base:R}));
+    sub:`ROAS ${t.roas.toFixed(1)}x · CAC ${brl2(t.cac)}`,val:t.ads,neg:true,base:R}));
   wf.append(lnCascata({dot:"var(--green)",nome:"Margem",sub:"antes dos custos fixos",
     val:t.margem-t.ads,base:R,total:true}));
   hero.append(wf); m.append(hero);
@@ -1018,8 +1088,10 @@ function vCanal(){
   const cp=el("div","card");
   const pf=porFamilia(f), totC=Object.values(pf).reduce((s,v)=>s+v.r,0);
   Object.entries(pf).sort((a,b)=>b[1].r-a[1].r).forEach(([k,v])=>
-    cp.append(linha({ic:FICON[k]||"📦",t:k,s:v.q?`${num(v.q)} un · custo ${brl(v.c)}`:"custo estimado",
-      a:v.r?brl(v.r):brl(v.c),b:v.r?"margem "+pct((v.r-v.c)/v.r*100):"",cls:"pos"})));
+    cp.append(linha({ic:FICON[k]||"📦",t:k,
+      s:v.q?`${num(v.q)} un · custo ${brl(v.c)}`:`só custo · ${brl(v.c)}`,
+      a:v.r?brl(v.r):"—",b:v.r?"margem "+pct((v.r-v.c)/v.r*100):"sem item registrado",
+      cls:v.r?"pos":""})));
   if(!Object.keys(pf).length) cp.append(el("div","empty","Sem itens registrados."));
   sp.append(cp); m.append(sp);
 
@@ -1031,7 +1103,7 @@ function vCanal(){
   if(ps.length>40){
     const b=el("button","btn g",`Ver todos os ${num(ps.length)} pedidos`);
     b.style.marginTop="10px";
-    b.onclick=()=>{S.view="pedidos";window.scrollTo(0,0);render();}; m.append(b);
+    b.onclick=()=>irPara("pedidos"); m.append(b);
   }
   return m;
 }
@@ -1042,11 +1114,7 @@ function vAtos(){
   const evs=eventosDe(f);
   const tot=evs.reduce((a,e)=>({b:a.b+e.bruto,r:a.r+e.resultado,c:a.c+e.com+e.extra}),{b:0,r:0,c:0});
 
-  if(S.grupo){
-    const volta=el("button","btn g","‹ Voltar ao resumo"); volta.style.marginBottom="12px";
-    volta.onclick=()=>{S.grupo=null;S.view="resumo";window.scrollTo(0,0);render();};
-    m.append(volta);
-  }
+  if(S.voltar) m.append(btVoltar());
 
   const hero=el("div","card"), h=el("div","hero");
   h.innerHTML=`<div class="lbl">📍 Atos e eventos <span class="tag">${f[2]}</span></div>
@@ -1122,13 +1190,29 @@ function detEvento(e){
     const payload={data:e.data, nome:ins.nome.value||null, local:ins.local.value||null,
       vendedor:ins.vendedor.value||null, comissao_pct:+ins.comissao_pct.value||0,
       custo_extra:+ins.custo_extra.value||0, custo_desc:ins.custo_desc.value||null};
-    const {error}=await sb.from("fin_eventos").upsert(payload,{onConflict:"data"});
-    if(error) return toast("Erro: "+error.message);
-    /* a comissao vive no pedido; recalcula os do dia com o novo % */
     const pct2=+ins.comissao_pct.value||0;
     const alvo=D.pedidos.filter(p=>p.data===e.data&&grupoDe(p)==="evento");
-    await Promise.all(alvo.map(p=>sb.from("fin_pedidos")
-      .update({comissao:+(p.bruto*pct2/100).toFixed(2), evento:ins.nome.value||null}).eq("id",p.id)));
+    /* so mexe na comissao se o % REALMENTE mudou. Antes, abrir o ato so pra dar nome
+       gravava 0% e apagava a comissao que ja estava lancada nos pedidos. */
+    const mudouPct = Math.abs(pct2-(+e.pct||0)) > 0.001;
+    if(mudouPct && e.com>0 && !confirm(
+        `Isso substitui ${brl2(e.com)} de comissão já lançada em ${alvo.length} vendas por ${pct(pct2)}. Continuar?`))
+      return;
+    const {error}=await sb.from("fin_eventos").upsert(payload,{onConflict:"data"});
+    if(error) return toast("Erro: "+error.message);
+    const ids=alvo.map(p=>p.id);
+    if(ids.length){
+      const patch={evento:ins.nome.value||null};
+      const r1=await sb.from("fin_pedidos").update(patch).in("id",ids);
+      if(r1.error) return toast("Erro ao marcar as vendas");
+      if(mudouPct){
+        /* comissao e proporcional ao bruto de cada venda, entao vai uma a uma */
+        const res=await Promise.all(alvo.map(p=>sb.from("fin_pedidos")
+          .update({comissao:+(p.bruto*pct2/100).toFixed(2)}).eq("id",p.id)));
+        const falhas=res.filter(r=>r.error).length;
+        if(falhas) return toast(`${falhas} vendas não salvaram — tente de novo`);
+      }
+    }
     fechar(); toast("Ato salvo"); await carregar(); render();
   };
   form.append(bt); c.append(form);
@@ -1138,6 +1222,7 @@ function detEvento(e){
 /* ==================================================== view: triagem ===== */
 function vTriagem(){
   const m=el("div"), pend=pendentes().slice().sort((a,b)=>a.data<b.data?1:-1);
+  if(S.voltar) m.append(btVoltar());
   m.append(el("div","note",`<b>Pix que caiu direto na conta.</b> O Mercado Pago não diz o que é:
     pode ser atacado fechado no WhatsApp, venda avulsa, empréstimo de família, aporte seu ou
     repasse de gateway. Enquanto não classificar, fica <b>fora de todos os números</b>.
@@ -1156,19 +1241,26 @@ function vTriagem(){
     const bloco=el("div"); bloco.style.borderTop="1px solid var(--line)";
     bloco.append(linha({ic:"❓",t:brl2(p.bruto),
       s:`${dbr(p.data)}${p.cliente?" · "+p.cliente:""} · palpite: ${palpite}`}));
-    const acoes=el("div"); acoes.style.cssText="display:flex;gap:6px;padding:0 15px 12px;flex-wrap:wrap";
-    const OP=[["atacado","📦 Atacado","atacado"],["varejo","📱 Venda avulsa","pix_qr"],
-              ["emprestimo","🤝 Empréstimo",null],["repasse","🏦 Repasse",null],["ignorar","🚫 Ignorar",null]];
-    OP.forEach(([k,rot,canal])=>{
+    const acoes=el("div"); acoes.style.cssText="display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:0 15px 14px";
+    const OP=[["atacado","📦 É atacado","atacado"],["varejo","📱 Venda avulsa","pix_qr"],
+              ["emprestimo","🤝 Empréstimo",null],["repasse","🏦 Repasse do site",null],
+              ["ignorar","🚫 Não é venda",null]];
+    OP.forEach(([k,rot,canal],idx)=>{
       const b=el("button","chip"+(palpite===k?" alt on":""),rot);
+      b.style.cssText="padding:13px 10px;min-height:46px;text-align:center;justify-content:center";
+      if(k==="ignorar") b.style.gridColumn="1 / -1";   // longe dos outros, e o unico destrutivo
       b.onclick=async()=>{
+        const antes={canal:p.canal,status:p.status,cogs:p.cogs,obs:p.obs};
         const cogsPct=+(D.par.cogs_rua_pct?.valor_num||22);
         const upd = canal
           ? {canal, status:"pago", cogs:+(p.bruto*cogsPct/100).toFixed(2), obs:"classificado: "+k}
           : {canal:"nao_venda", status:"excluido", obs:"classificado: "+k};
         const {error}=await sb.from("fin_pedidos").update(upd).eq("id",p.id);
-        if(error) return toast("Erro");
-        toast(rot.replace(/^\S+\s/,"")+" ✓");
+        if(error) return toast("Erro ao salvar");
+        toastDesfazer(rot.replace(/^\S+\s/,"")+" ✓", async()=>{
+          await sb.from("fin_pedidos").update(antes).eq("id",p.id);
+          await carregar(); render(); toast("Desfeito");
+        });
         await carregar(); render();
       };
       acoes.append(b);
@@ -1193,11 +1285,13 @@ function vPedidos(){
   const f=faixa(), t=totais(f), m=el("div");
   const ps=pedidosDe(f).slice().sort((a,b)=>a.data<b.data?1:a.data>b.data?-1:(b.id-a.id));
 
-  const volta=el("button","btn g","‹ Voltar"); volta.style.marginBottom="12px";
-  volta.onclick=()=>{S.view=S.grupo==="evento"?"atos":S.grupo?"canal":"resumo";window.scrollTo(0,0);render();};
-  m.append(volta);
+  if(S.voltar) m.append(btVoltar());
   m.append(grupoChips([[null,"Tudo"],["online","Online"],["evento","Atos"],["atacado","Atacado"]],
     S.grupo,v=>{S.grupo=v;S.canal=null;render();},true));
+  if(S.canal){
+    const x=el("button","btn g",`✕ Filtrado por ${NOME[S.canal]||S.canal}`);
+    x.style.marginBottom="12px"; x.onclick=()=>{S.canal=null;render();}; m.append(x);
+  }
 
   const busca=el("input");
   busca.placeholder="Buscar cliente, evento, nº do pedido…";
@@ -1280,7 +1374,7 @@ function vCustos(){
   g.append(kpi("📣 ADs no período",brl(t.ads),
     t.cliques?`${num(t.cliques)} cliques · ${brl2(t.ads/t.cliques)}/clique`:""));
   g.append(kpi("🔁 ROAS",t.roas?t.roas.toFixed(2)+"x":"—",
-    t.roas&&t.roas<1?"cada R$ 1 volta "+brl2(t.roas):"o que entrou ÷ ADs"));
+    t.roas&&t.roas<1?"cada R$ 1 volta "+brl2(t.roas):"receita online ÷ ADs"));
   m.append(g);
 
   const s=el("div","sec"); s.append(el("h2",null,"Gasto com anúncios"));
@@ -1343,13 +1437,13 @@ function vMais(){
   const c0=el("div","card");
   if(pend.length) c0.append(linha({ic:"❓",t:"Classificar Pix diretos",
     s:`${pend.length} pendentes · ${brl(pend.reduce((a,p)=>a+p.bruto,0))} fora da conta`,a:"›",
-    onclick:()=>{S.view="triagem";window.scrollTo(0,0);render();}}));
+    onclick:()=>irPara("triagem")}));
   c0.append(linha({ic:"📍",t:"Atos e eventos",s:"nomear, comissão e despesas do dia",a:"›",
-    onclick:()=>{S.view="atos";S.grupo="evento";window.scrollTo(0,0);render();}}));
+    onclick:()=>irPara("atos",{grupo:"evento"})}));
   c0.append(linha({ic:"💵",t:"Lançar venda em dinheiro",s:"o que não passa por MP nem site",
     a:"›",onclick:formVenda}));
   c0.append(linha({ic:"🧾",t:"Todos os pedidos",s:"lista completa com busca",a:"›",
-    onclick:()=>{S.view="pedidos";S.grupo=null;window.scrollTo(0,0);render();}}));
+    onclick:()=>irPara("pedidos",{grupo:null,canal:null})}));
   c0.append(linha({ic:"📥",t:"Exportar pedidos (CSV)",s:"abre no Excel",a:"›",onclick:exportar}));
   c0.append(linha({ic:"⚙️",t:"Parâmetros de custo",s:"taxas do site, custo estimado de rua",
     a:"›",onclick:formParam}));
@@ -1385,6 +1479,20 @@ function vMais(){
     a:brl(eq.reduce((s,c)=>s+c.valor,0)),onclick:detEquipamento}));
   s2.append(c2); m.append(s2);
 
+  const desc=desconhecidos();
+  if(desc.length){
+    const sd=el("div","sec"); sd.append(el("h2",null,"⚠️ Fora da conta"));
+    const cd=el("div","card");
+    cd.append(linha({ic:"🚧",t:`${desc.length} lançamentos com canal desconhecido`,
+      s:`${brl(desc.reduce((a,p)=>a+p.bruto,0))} não entram em nenhum total`,
+      a:"›",onclick:()=>{
+        const box=el("div","card");
+        desc.forEach(p=>box.append(linha({t:brl2(p.bruto),
+          s:`${dbr(p.data)} · canal "${p.canal}" · ${p.obs||""}`})));
+        abrir("Canal desconhecido",box);
+      }}));
+    sd.append(cd); m.append(sd);
+  }
   const s3=el("div","sec"); s3.append(el("h2",null,"De onde vêm estes números"));
   const c3=el("div","card");
   c3.append(el("div","note",`
@@ -1505,11 +1613,11 @@ function formParam(){
   abrir("Parâmetros", c);
 }
 function exportar(){
-  const cab=["data","canal","evento","vendedor","cliente","uf","bruto","desconto",
+  const cab=["data","canal","grupo","evento","vendedor","cliente","uf","bruto","desconto",
              "frete_cobrado","frete_pago","taxa","cogs","comissao","margem"];
   const linhas=[cab.join(";")];
-  D.pedidos.forEach(p=>linhas.push(cab.map(k=>{
-    const v = k==="margem" ? margem(p) : p[k];
+  D.pedidos.filter(p=>vale(p)).forEach(p=>linhas.push(cab.map(k=>{
+    const v = k==="margem" ? margem(p) : k==="grupo" ? (GNOME[grupoDe(p)]||"") : p[k];
     return typeof v==="number" ? String(v).replace(".",",") : (v??"");
   }).join(";")));
   const blob=new Blob(["﻿"+linhas.join("\n")],{type:"text/csv;charset=utf-8"});
@@ -1538,7 +1646,8 @@ function render(){
   const f=faixa();
   const V=VIEW(S.view)||VIEWS.resumo;
   $("#tit").textContent = S.view==="canal"&&S.grupo ? GNOME[S.grupo] : V.t;
-  $("#sub").textContent = f[2] + (S.canal?" · "+(NOME[S.canal]||S.canal):"");
+  const modo = S.frete==="produto"?" · só produto" : S.frete==="liquido"?" · líquido de frete" : "";
+  $("#sub").textContent = f[2] + (S.canal?" · "+(NOME[S.canal]||S.canal):"") + modo;
   document.title = "Painel Brochevique";
   const cp=$("#chipsPer"); cp.innerHTML="";
   [["hoje","Hoje"],["7d","7 dias"],["30d","30 dias"],["mes","Este mês"],["tudo","Tudo"]].forEach(([v,l])=>{
@@ -1546,10 +1655,12 @@ function render(){
     b.onclick=()=>{S.periodo=v;S.sel=null;render();}; cp.append(b);
   });
   const nv=$("#nav"); nv.innerHTML="";
-  const ativa = S.view==="canal"?"vendas" : S.view==="pedidos"?(S.grupo==="evento"?"atos":"vendas") : S.view;
+  const ativa = S.view==="canal" ? "vendas"
+    : S.view==="pedidos" ? (S.grupo==="evento"?"atos":"vendas")
+    : S.view==="triagem" ? "mais" : S.view;
   Object.entries(VIEWS).forEach(([k,v])=>{
     const b=el("button",ativa===k?"on":"",`<span class="n">${v.n}</span>${v.t}`);
-    b.onclick=()=>{S.view=k;S.grupo=v.grupo;S.canal=null;S.sel=null;window.scrollTo(0,0);render();};
+    b.onclick=()=>{S.view=k;S.grupo=v.grupo;S.canal=null;S.sel=null;S.voltar=null;window.scrollTo(0,0);render();};
     nv.append(b);
   });
   const vw=$("#view"); vw.innerHTML="";

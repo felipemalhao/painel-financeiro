@@ -79,10 +79,25 @@ main{padding:16px 16px 24px;max-width:760px;margin:0 auto}
 .wf .nm{flex:1;font-size:14px;min-width:0}
 .wf .nm small{display:block;color:var(--tx3);font-size:11.5px;margin-top:1px}
 .wf .vl{font-variant-numeric:tabular-nums;font-weight:620;font-size:14.5px;white-space:nowrap}
-.wf .pc{font-size:11px;color:var(--tx3);width:44px;text-align:right;font-variant-numeric:tabular-nums}
+.wf .vl{min-width:84px;text-align:right;flex:0 0 auto}
+.wf .ln{gap:10px;padding:12px 14px}
+.wf .nm{font-size:14px;line-height:1.25}
+.wf .nm small{font-size:11.5px;line-height:1.3}
 .wf .ln.tot{background:var(--bg3)}
 .wf .ln.tot .nm{font-weight:680} .wf .ln.tot .vl{font-size:17px;font-weight:720}
-.chev{color:var(--tx3);font-size:11px;margin-left:2px}
+.chev{color:var(--tx3);font-size:13px;margin-left:2px;transition:transform .2s;display:inline-block}
+.ln.aberta .chev{transform:rotate(90deg);color:var(--tx2)}
+.ln.aberta{background:var(--bg3)}
+/* gaveta que abre embaixo da linha, sem pop-up */
+.gav{border-top:1px solid var(--line);background:rgba(0,0,0,.18);padding:4px 15px 12px}
+.gav .gl{display:flex;justify-content:space-between;gap:12px;padding:7px 0;font-size:13px;
+  border-bottom:1px solid rgba(255,255,255,.05)}
+.gav .gl:last-of-type{border-bottom:0}
+.gav .gl b{font-variant-numeric:tabular-nums;font-weight:620}
+.gav .gl .nm{color:var(--tx2);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gav .mais{margin-top:8px;font-size:12.5px;color:var(--blue);font-weight:600;padding:6px 0}
+.gav .barra{height:3px;border-radius:2px;background:var(--bg3);margin-top:5px;overflow:hidden}
+.gav .barra i{display:block;height:100%;background:var(--blue);border-radius:2px}
 
 /* ---------- kpis ---------- */
 .g2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
@@ -145,7 +160,8 @@ main{padding:16px 16px 24px;max-width:760px;margin:0 auto}
 .sheet .sh h3{margin:0;font-size:16px;font-weight:680;flex:1;letter-spacing:-.2px}
 .sheet .sh .x{width:30px;height:30px;border-radius:9px;background:var(--bg3);display:grid;place-items:center;
   color:var(--tx2);font-size:15px}
-.sheet .body{padding:14px 16px}
+.sheet .body{padding:14px 16px;max-width:720px;margin:0 auto}
+.sheet .sh{max-width:720px;margin:0 auto}
 .dl{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--line);font-size:14px}
 .dl:last-child{border-bottom:0}
 .dl dt{color:var(--tx2);margin:0} .dl dd{margin:0;font-weight:600;font-variant-numeric:tabular-nums;text-align:right}
@@ -240,9 +256,10 @@ function segunda(s){ const d=new Date(s+"T12:00:00"); const w=(d.getDay()+6)%7;
   d.setDate(d.getDate()-w); return iso(d); }
 
 /* ============================================================ estado ==== */
-const S = { view:"resumo", periodo:"30d", frete:"com", gran:"dia", canal:null, sel:null };
+const S = { view:"resumo", periodo:"30d", frete:"com", gran:"dia",
+            grupo:null, canal:null, sel:null, voltar:null };
 const D = { pedidos:[], itens:[], itensPor:{}, ads:[], fixos:[], produtos:[],
-            emprestimos:[], parcelas:[], estoque:[], compras:[], par:{} };
+            emprestimos:[], parcelas:[], estoque:[], compras:[], eventos:[], evPor:{}, par:{} };
 
 /* ============================================================ carga ===== */
 async function carregar(){
@@ -260,12 +277,15 @@ async function carregar(){
       if(de>50000) return tudo;
     }
   };
-  const [pedidos,itens,ads,fixos,produtos,emp,parc,est,par,compras] = await Promise.all([
+  const [pedidos,itens,ads,fixos,produtos,emp,parc,est,par,compras,eventos] = await Promise.all([
     q("fin_pedidos","data"), q("fin_pedido_itens"), q("fin_ads","data"),
     q("fin_custos_fixos"), q("fin_produtos"), q("fin_emprestimos"),
     q("fin_parcelas","vencimento"), q("fin_estoque"), q("fin_parametros"),
-    q("fin_compras","data"),
+    q("fin_compras","data"), q("fin_eventos","data"),
   ]);
+  D.eventos = (eventos||[]).map(e=>({...e,
+    comissao_pct:+e.comissao_pct||0, custo_extra:+e.custo_extra||0}));
+  D.evPor = {}; D.eventos.forEach(e=>D.evPor[e.data]=e);
   D.compras = compras.map(c=>({...c, valor:+c.valor||0}));
   const f = v => +v||0;
   D.pedidos = pedidos.map(p=>({...p, bruto:f(p.bruto), frete_cobrado:f(p.frete_cobrado),
@@ -300,9 +320,15 @@ function faixaAnterior(){
   const f1=new Date(f2); f1.setDate(f1.getDate()-dias+1);
   return [iso(f1),iso(f2),"anterior"];
 }
-const noPer = (p,f) => p.data>=f[0] && p.data<=f[1] && (!S.canal || p.canal===S.canal);
+/* status "pendente" = Pix direto ainda nao classificado. Fica fora de TODO total
+   ate voce dizer o que e, na aba Triagem. */
+const vale = p => p.status!=="pendente" && p.canal!=="a_classificar";
+const noPer = (p,f) => vale(p) && p.data>=f[0] && p.data<=f[1]
+  && (!S.grupo || grupoDe(p)===S.grupo) && (!S.canal || p.canal===S.canal);
 const pedidosDe = f => D.pedidos.filter(p=>noPer(p,f));
-const adsDe = f => D.ads.filter(x=>x.data>=f[0] && x.data<=f[1]);
+/* ADs sao do site: se voce filtrou rua ou atacado, nao faz sentido descontar */
+const adsDe = f => temAds(S.grupo) ? D.ads.filter(x=>x.data>=f[0] && x.data<=f[1]) : [];
+const pendentes = () => D.pedidos.filter(p=>p.status==="pendente");
 
 /* ==================================================== nucleo financeiro = */
 function receita(p){
@@ -328,6 +354,10 @@ function totais(f){
   t.ads     = ads.reduce((s,a)=>s+a.gasto,0);
   t.cliques = ads.reduce((s,a)=>s+a.cliques,0);
   t.caixa   = t.prod + t.freteCob;
+  /* custo do ato que nao e produto: transporte, quem filmou, ajudante */
+  t.custoEvento = (!S.grupo || S.grupo==="evento")
+    ? D.eventos.filter(e=>e.data>=f[0] && e.data<=f[1]).reduce((s,e)=>s+e.custo_extra,0) : 0;
+  t.margem -= t.custoEvento;
   t.lucro   = t.margem - t.ads;
   t.mg      = t.receita ? t.lucro/t.receita*100 : 0;
   t.ticket  = t.n ? t.caixa/t.n : 0;
@@ -421,97 +451,290 @@ function dl(pares){
   });
   return d;
 }
-const ICON = {site:"🛒",pix_qr:"📱",maquininha:"💳",dinheiro:"💵",checkout_mp:"🔗"};
+const ICON = {site:"🛒",pix_qr:"📱",maquininha:"💳",dinheiro:"💵",checkout_mp:"🔗",
+              atacado:"📦",a_classificar:"❓"};
 const NOME = {site:"Site (Nuvemshop)",pix_qr:"Pix QR na rua",maquininha:"Maquininha Point",
-              dinheiro:"Dinheiro",checkout_mp:"Link / Checkout MP"};
+              dinheiro:"Dinheiro",checkout_mp:"Link / Checkout MP",
+              atacado:"Atacado (WhatsApp)",a_classificar:"A classificar"};
+/* 3 frentes, no jeito que o Felipe pensa o negocio:
+   ONLINE = site + outras plataformas (link MP, e no futuro Shopee/TikTok)
+   EVENTO = ato/rua — aqui o que conta e o EVENTO inteiro, nao cada Pix de R$5
+   ATACADO = pedido fechado no WhatsApp
+   ADs so movem o online: por isso o gasto some quando voce olha evento ou atacado. */
+const GRUPO = {site:"online", checkout_mp:"online",
+               pix_qr:"evento", maquininha:"evento", dinheiro:"evento",
+               atacado:"atacado", a_classificar:"triagem"};
+const GNOME = {online:"Vendas online", evento:"Atos e eventos", atacado:"Atacado (WhatsApp)"};
+const GICON = {online:"🛒", evento:"📍", atacado:"📦"};
+const GSUB  = {online:["site","checkout_mp"], evento:["pix_qr","maquininha","dinheiro"], atacado:["atacado"]};
+const grupoDe = p => GRUPO[p.canal] || "evento";
+const temAds  = g => !g || g==="online";
+
+/* transportadora-mae: o que importa primeiro e Correios x Melhor Envio, nao o servico */
+function transportadora(obs){
+  const t=(obs||"").replace(/^#\d+\s*/,"");
+  if(!t) return "Sem frete";
+  if(/via Melhor Envio/i.test(t)) return "Melhor Envio";
+  if(/^Nuvem Envio/i.test(t))     return "Nuvem Envio";
+  if(/Correios/i.test(t))         return "Correios";
+  if(/Retirar/i.test(t))          return "Retirada";
+  return "Outros";
+}
+/* no resumo de custo o que importa e a familia, nao o modelo:
+   40 linhas de "Broche X" viram uma linha "Broches" (o detalhe fica no + ) */
+function familia(nome){
+  const n=(nome||"").toLowerCase();
+  if(n.includes("broche")||n.includes("boton")) return "Broches";
+  if(n.includes("kit 6 copos")||n.includes("copo")) return "Copos";
+  if(n.startsWith("pin")||n.includes(" pin ")) return "Pins";
+  if(n.includes("almofada")) return "Almofadas";
+  if(n.includes("ima")||n.includes("ímã")||n.includes("chaveiro")||n.includes("abridor")) return "Ímãs e chaveiros";
+  if(n.includes("bon")) return "Bonés";
+  return "Outros";
+}
+const FICON={Broches:"🔴",Copos:"🥤",Pins:"📌",Almofadas:"🧸","Ímãs e chaveiros":"🔑",Bonés:"🧢",Outros:"📦"};
+const servico = obs => (obs||"").replace(/^#\d+\s*/,"").replace(/\s*\(via Melhor Envio\)/i,"") || "—";
+
+/* ==================================================== gaveta (inline) === */
+/* Regra do painel: o PRIMEIRO numero e sempre o unificado. O detalhe abre numa
+   gaveta aqui mesmo (sem pop-up). O pop-up e so pro "ver tudo" — nivel 3. */
+function gaveta(itens, verTudo, rotuloTudo){
+  const g = el("div","gav");
+  const max = Math.max(...itens.map(i=>Math.abs(i.v||0)),1);
+  itens.forEach(i=>{
+    const l = el("div","gl");
+    l.innerHTML = `<span class="nm">${esc(i.n)}</span><b class="${i.cls||""}">${i.t||brl(i.v)}</b>`;
+    if(i.onclick){ l.style.cursor="pointer"; l.onclick=e=>{e.stopPropagation(); i.onclick();}; }
+    g.append(l);
+    if(i.barra!==false){
+      const b=el("div","barra"); b.innerHTML=`<i style="width:${Math.abs(i.v||0)/max*100}%"></i>`;
+      g.append(b);
+    }
+  });
+  if(!itens.length) g.append(el("div","gl",'<span class="nm">nada no período</span>'));
+  if(verTudo){
+    const b = el("button","mais", (rotuloTudo||"Ver tudo")+" ›");
+    b.onclick = e=>{ e.stopPropagation(); verTudo(); };
+    g.append(b);
+  }
+  return g;
+}
+/* linha da cascata: toca e abre a gaveta embaixo, sem sair da tela */
+function lnCascata({dot,nome,sub,val,neg,base,itens,verTudo,rotuloTudo,total}){
+  const wrap = el("div");
+  const b = el("button","ln"+(total?" tot":""));
+  const p2 = base ? pct(val/base*100) : "";
+  const sub2 = [p2, sub].filter(Boolean).join(" · ");
+  b.innerHTML = `<span class="dot" style="background:${dot}"></span>
+    <span class="nm">${nome}${sub2?`<small>${sub2}</small>`:""}</span>
+    <span class="vl ${neg?"neg":(val<0?"neg":"")}">${neg?"−":""}${brl(Math.abs(val))}</span>
+    ${itens?'<span class="chev">›</span>':""}`;
+  wrap.append(b);
+  if(itens){
+    let aberta=false, g=null;
+    b.onclick=()=>{
+      aberta=!aberta; b.classList.toggle("aberta",aberta);
+      if(aberta){ g=gaveta(itens,verTudo,rotuloTudo); wrap.append(g); }
+      else if(g){ g.remove(); g=null; }
+    };
+  } else b.style.cursor="default";
+  return wrap;
+}
+
+/* ==================================================== quebras =========== */
+function porGrupo(f){
+  const o={};
+  pedidosDe(f).forEach(p=>{
+    const g=grupoDe(p); (o[g] ||= {n:0,r:0,m:0,cogs:0,qtd:0,taxa:0});
+    o[g].n++; o[g].r+=receita(p); o[g].m+=margem(p);
+    o[g].cogs+=p.cogs; o[g].qtd+=p.qtd; o[g].taxa+=p.taxa;
+  });
+  return o;
+}
+function porFamilia(f){
+  const ids=new Set(pedidosDe(f).map(p=>p.id)), o={};
+  D.itens.forEach(i=>{ if(!ids.has(i.pedido_id)) return;
+    const k=familia(i.produto); (o[k] ||= {q:0,r:0,c:0});
+    o[k].q+=i.qtd; o[k].r+=i.qtd*i.preco_un; o[k].c+=i.qtd*i.custo_un; });
+  const semItem=pedidosDe(f).filter(p=>!(D.itensPor[p.id]||[]).length).reduce((s,p)=>s+p.cogs,0);
+  if(semItem>0) o["Atos (custo estimado)"]={q:0,r:0,c:semItem};
+  return o;
+}
+function porTransportadora(f){
+  const o={};
+  pedidosDe(f).forEach(p=>{ if(!p.frete_pago && !p.frete_cobrado) return;
+    const k=transportadora(p.obs); (o[k] ||= {n:0,c:0,p:0});
+    o[k].n++; o[k].c+=p.frete_cobrado; o[k].p+=p.frete_pago; });
+  return o;
+}
+/* Um ATO e uma unidade: nao 300 Pix de R$5, mas um evento com resultado proprio. */
+function eventosDe(f){
+  const dias={};
+  pedidosDe(f).filter(p=>grupoDe(p)==="evento").forEach(p=>{
+    (dias[p.data] ||= {data:p.data,n:0,bruto:0,margem:0,cogs:0,com:0,taxa:0,porCanal:{}});
+    const d=dias[p.data];
+    d.n++; d.bruto+=p.bruto; d.margem+=margem(p); d.cogs+=p.cogs;
+    d.com+=p.comissao; d.taxa+=p.taxa;
+    d.porCanal[p.canal]=(d.porCanal[p.canal]||0)+p.bruto;
+  });
+  const lista = Object.values(dias).map(d=>{
+    const e=D.evPor[d.data]||{};
+    const extra=+e.custo_extra||0;
+    return {...d, nome:e.nome||("Ato de "+dbr(d.data)), local:e.local||"", vendedor:e.vendedor||"",
+            pct:+e.comissao_pct||0, extra, extraDesc:e.custo_desc||"", ev:e,
+            resultado:d.margem-extra,
+            /* dia com 2 vendinhas nao e um ato: so vira ato com movimento de verdade
+               (ou se voce ja deu nome pra ele) */
+            eAto: d.n>=5 || d.bruto>=150 || !!(e.nome && !/confirmar/i.test(e.nome))};
+  });
+  const atos=lista.filter(x=>x.eAto).sort((a,b)=>a.data<b.data?1:-1);
+  const miudos=lista.filter(x=>!x.eAto);
+  if(miudos.length){
+    const j=miudos.reduce((a,x)=>({n:a.n+x.n,bruto:a.bruto+x.bruto,margem:a.margem+x.margem,
+      cogs:a.cogs+x.cogs,com:a.com+x.com,taxa:a.taxa+x.taxa}),
+      {n:0,bruto:0,margem:0,cogs:0,com:0,taxa:0});
+    const canais={}; miudos.forEach(x=>Object.entries(x.porCanal)
+      .forEach(([k,v])=>canais[k]=(canais[k]||0)+v));
+    atos.push({...j, data:miudos[miudos.length-1].data, porCanal:canais, avulso:true,
+      nome:`Vendas avulsas na rua (${miudos.length} dias)`, local:"", vendedor:"",
+      pct:0, extra:0, extraDesc:"", ev:{}, resultado:j.margem, eAto:false});
+  }
+  return atos;
+}
+const somaFixos = () => D.fixos.filter(x=>x.ativo!==false).reduce((s,x)=>s+(+x.valor_mensal||0),0);
 
 /* ==================================================== view: resumo ====== */
 function vResumo(){
   const f=faixa(), t=totais(f), m=el("div");
+  const fx=fixoNoPeriodo(f), liquido=t.lucro-fx;
 
   m.append(grupoChips([["com","Receita c/ frete"],["produto","Só produto"],["liquido","Líquido de frete"]],
     S.frete, v=>{S.frete=v;render();}, true));
 
-  const hero = el("div","card");
-  const h = el("div","hero");
-  const ant = faixaAnterior(), ta = ant?totais(ant):null;
-  const varia = ta && ta.lucro!==0 ? (t.lucro-ta.lucro)/Math.abs(ta.lucro)*100 : null;
-  h.innerHTML = `<div class="lbl">💰 Lucro no período <span class="tag">${f[2]}</span></div>
-    <div class="big ${t.lucro<0?"neg":"pos"}">${brl(t.lucro)}</div>
+  const hero=el("div","card"), h=el("div","hero");
+  const ant=faixaAnterior(), ta=ant?totais(ant):null;
+  const liqAnt = ta ? ta.lucro-fixoNoPeriodo(ant) : null;
+  const varia = liqAnt ? (liquido-liqAnt)/Math.abs(liqAnt)*100 : null;
+  const evs=eventosDe(f);
+  const nVendas=pedidosDe(f).filter(p=>grupoDe(p)!=="evento").length;
+  const mgLiq = t.receita ? liquido/t.receita*100 : 0;
+  h.innerHTML = `<div class="lbl">💰 Sobrou no período <span class="tag">${f[2]}</span></div>
+    <div class="big ${liquido<0?"neg":"pos"}">${brl(liquido)}</div>
     <div class="meta">
-      <span class="pill ${t.mg<0?"neg":"pos"}">margem ${pct(t.mg)}</span>
-      <span class="pill">${num(t.n)} vendas</span>
-      ${varia!=null?`<span class="pill ${varia<0?"neg":"pos"}">${varia>0?"▲":"▼"} ${pct(Math.abs(varia))} vs período anterior</span>`:""}
+      <span class="pill ${mgLiq<0?"neg":"pos"}">margem ${pct(mgLiq)}</span>
+      <span class="pill">${num(nVendas)} vendas${evs.length?" · "+num(evs.length)+" atos":""}</span>
+      ${varia!=null?`<span class="pill ${varia<0?"neg":"pos"}">${varia>0?"▲":"▼"} ${pct(Math.abs(varia))} vs anterior</span>`:""}
     </div>`;
   hero.append(h);
 
-  const R = t.receita || 1;
-  const ln = (dot,nome,sub,val,neg,tap)=>{
-    const b = el("button","ln");
-    b.innerHTML = `<span class="dot" style="background:${dot}"></span>
-      <span class="nm">${nome}${sub?`<small>${sub}</small>`:""}</span>
-      <span class="pc">${pct(val/R*100)}</span>
-      <span class="vl ${neg?"neg":""}">${neg?"−":""}${brl(Math.abs(val))}</span>
-      ${tap?'<span class="chev">›</span>':""}`;
-    if(tap) b.onclick=tap; else b.style.cursor="default";
-    return b;
-  };
-  const wf = el("div","wf");
-  wf.append(ln("var(--blue)","Receita",
-    S.frete==="produto" ? "só produtos, sem frete"
-    : S.frete==="liquido" ? "produtos + frete cobrado − frete pago"
-    : "produtos + frete cobrado",
-    t.receita,false,()=>detReceita(f)));
-  wf.append(ln("var(--amber)","Custo do produto","o que saiu do estoque",t.cogs,true,()=>detProdutos(f)));
-  if(S.frete!=="liquido" && t.fretePago)
-    wf.append(ln("var(--purple)","Frete que eu paguei",
-      t.freteCob?`cobrei ${brl(t.freteCob)} dos clientes`:"nenhum frete cobrado",
-      t.fretePago,true,()=>detFrete(f)));
-  if(t.taxa) wf.append(ln("var(--tx3)","Taxas de pagamento","Mercado Pago + Nuvem Pago",t.taxa,true,()=>detTaxas(f)));
-  if(t.comissao) wf.append(ln("var(--tx3)","Comissão de vendedor",null,t.comissao,true,()=>detComissao(f)));
-  if(t.ads) wf.append(ln("var(--red)","Anúncios (ADs)",
-    `${num(t.cliques)} cliques · ROAS ${t.roas.toFixed(1)}x`,t.ads,true,()=>{S.view="custos";render();}));
-  const tot = ln("var(--green)","Lucro operacional","antes dos custos fixos",t.lucro,false);
-  tot.classList.add("tot"); wf.append(tot);
-  hero.append(wf); m.append(hero);
+  const R=t.receita||1, wf=el("div","wf");
+  const pg=porGrupo(f);
 
-  const fx = fixoNoPeriodo(f);
-  if(fx>0){
-    const c = el("div","card"); c.style.marginTop="10px";
-    c.append(linha({ic:"🏠",t:"Depois dos custos fixos",s:`${brl(fx)} rateados no período`,
-      a:`<span class="${(t.lucro-fx)<0?"neg":"pos"}">${brl(t.lucro-fx)}</span>`,
-      b:pct((t.lucro-fx)/R*100), cls:(t.lucro-fx)<0?"neg":"pos",
-      onclick:()=>detFixos(f,t,fx)}));
-    m.append(c);
+  wf.append(lnCascata({dot:"var(--blue)",nome:"Receita",
+    sub: S.frete==="produto"?"só produtos, sem frete"
+       : S.frete==="liquido"?"produtos + frete cobrado − frete pago"
+       : "produtos + frete cobrado", val:t.receita, base:R,
+    itens:["online","evento","atacado"].filter(g=>pg[g]).map(g=>({
+      n:(GICON[g]||"")+" "+GNOME[g], v:pg[g].r,
+      onclick:()=>{S.grupo=g; S.view=g==="evento"?"atos":"canal"; window.scrollTo(0,0); render();}})),
+    verTudo:()=>detReceita(f), rotuloTudo:"Abrir composição"}));
+
+  const pf=porFamilia(f);
+  wf.append(lnCascata({dot:"var(--amber)",nome:"Custo do produto",sub:"o que saiu do estoque",
+    val:t.cogs,neg:true,base:R,
+    itens:Object.entries(pf).sort((a,b)=>b[1].c-a[1].c)
+      .map(([k,v])=>({n:(FICON[k]||"📦")+" "+k+(v.q?` · ${num(v.q)} un`:""),v:v.c})),
+    verTudo:()=>detProdutos(f),rotuloTudo:"Ver modelo a modelo"}));
+
+  if(S.frete!=="liquido" && t.fretePago){
+    const pt=porTransportadora(f);
+    wf.append(lnCascata({dot:"var(--purple)",nome:"Frete que eu paguei",
+      sub:t.freteCob?`cobrei ${brl(t.freteCob)} dos clientes`:"nada cobrado do cliente",
+      val:t.fretePago,neg:true,base:R,
+      itens:Object.entries(pt).sort((a,b)=>b[1].p-a[1].p).map(([k,v])=>({
+        n:(k==="Correios"?"📮 ":k==="Melhor Envio"?"🚚 ":"📦 ")+k+` · ${v.n} envios`, v:v.p,
+        t:brl(v.p)+`  (${v.c-v.p<0?"−":"+"}${brl(Math.abs(v.c-v.p))})`,
+        cls:v.c-v.p<0?"neg":"pos"})),
+      verTudo:()=>detFrete(f),rotuloTudo:"Ver serviço a serviço"}));
   }
 
-  /* ticket separado: misturar um Pix de R$5 na rua com um pedido de R$66 do site engana */
-  const tk = (cs)=>{ const q=pedidosDe(f).filter(p=>cs.includes(p.canal));
-    return q.length ? q.reduce((s,p)=>s+p.bruto+p.frete_cobrado,0)/q.length : 0; };
-  const nSite = pedidosDe(f).filter(p=>p.canal==="site").length;
-  const nRua  = pedidosDe(f).filter(p=>["pix_qr","maquininha","dinheiro"].includes(p.canal)).length;
-  const g = el("div","sec"); g.style.marginTop="22px";
-  g.append(el("h2",null,"Números do período"));
-  const gg = el("div","g2");
-  gg.append(kpi("🛒 Ticket do site",nSite?brl2(tk(["site"])):"—",
-    nSite?`${num(nSite)} pedidos · ${num(t.qtd)} peças`:"sem pedidos"));
-  gg.append(kpi("📱 Ticket da rua",nRua?brl2(tk(["pix_qr","maquininha","dinheiro"])):"—",
-    nRua?`${num(nRua)} vendas avulsas`:"sem vendas"));
-  gg.append(kpi("📣 CAC",nSite&&t.ads?brl2(t.ads/nSite):"—","ADs por pedido do site"));
+  if(t.taxa) wf.append(lnCascata({dot:"var(--tx3)",nome:"Taxas de pagamento",
+    sub:"Mercado Pago + Nuvem Pago",val:t.taxa,neg:true,base:R,
+    itens:["online","evento","atacado"].filter(g=>pg[g]&&pg[g].taxa)
+      .map(g=>({n:GNOME[g],v:pg[g].taxa})),
+    verTudo:()=>detTaxas(f)}));
+
+  const custoAto=t.comissao+t.custoEvento;
+  if(custoAto) wf.append(lnCascata({dot:"var(--tx3)",nome:"Custo dos atos",
+    sub:"comissão e despesas do dia",val:custoAto,neg:true,base:R,
+    itens:evs.filter(e=>e.com||e.extra).map(e=>({n:"📍 "+e.nome,v:e.com+e.extra,
+      onclick:()=>detEvento(e)})),
+    verTudo:()=>{S.view="atos";window.scrollTo(0,0);render();},rotuloTudo:"Abrir atos e eventos"}));
+
+  if(t.ads) wf.append(lnCascata({dot:"var(--red)",nome:"Anúncios (ADs)",
+    sub:`${num(t.cliques)} cliques · ROAS ${t.roas.toFixed(1)}x`,val:t.ads,neg:true,base:R,
+    itens:adsDe(f).slice().sort((a,b)=>b.gasto-a.gasto).slice(0,5)
+      .map(a=>({n:"Maior gasto · "+dbr(a.data),v:a.gasto})),
+    verTudo:()=>{S.view="custos";window.scrollTo(0,0);render();},rotuloTudo:"Abrir custos"}));
+
+  /* custos fixos DENTRO da cascata — a funcionaria tem que aparecer na conta geral */
+  if(fx>0){
+    const mensal=somaFixos(), prop=mensal?fx/mensal:0;
+    wf.append(lnCascata({dot:"var(--tx2)",nome:"Custos fixos",
+      sub:`${brl(mensal)}/mês rateados no período`,val:fx,neg:true,base:R,
+      itens:D.fixos.filter(x=>x.ativo!==false)
+        .sort((a,b)=>(+b.valor_mensal||0)-(+a.valor_mensal||0))
+        .map(x=>({n:x.item,v:(+x.valor_mensal||0)*prop})),
+      verTudo:()=>{S.view="custos";window.scrollTo(0,0);render();},rotuloTudo:"Editar custos fixos"}));
+  }
+
+  wf.append(lnCascata({dot:"var(--green)",nome:"Sobrou",sub:"depois de absolutamente tudo",
+    val:liquido,base:R,total:true}));
+  hero.append(wf); m.append(hero);
+
+  /* ---- onde vendi: 3 linhas unificadas ---- */
+  const cs=el("div","sec"); cs.style.marginTop="22px";
+  cs.append(el("h2",null,"Onde vendi",'<span class="r">toque p/ abrir</span>'));
+  const cc=el("div","card");
+  const maxR=Math.max(...Object.values(pg).map(v=>v.r),1);
+  ["online","evento","atacado"].forEach(g=>{
+    const v=pg[g]; if(!v) return;
+    const sub = g==="evento"
+      ? `${evs.length} ato${evs.length===1?"":"s"} · margem ${pct(v.r?v.m/v.r*100:0)}`
+      : `${v.n} pedidos · margem ${pct(v.r?v.m/v.r*100:0)}`;
+    const r=linha({ic:GICON[g],t:GNOME[g],s:sub,a:brl(v.r),b:brl(v.m)+" margem",
+      cls:v.m<0?"neg":"pos",
+      onclick:()=>{S.grupo=g;S.view=g==="evento"?"atos":"canal";window.scrollTo(0,0);render();}});
+    const pb=el("div","pb"); pb.innerHTML=`<i style="width:${v.r/maxR*100}%"></i>`;
+    r.querySelector(".mid").append(pb);
+    cc.append(r);
+  });
+  if(!Object.keys(pg).length) cc.append(el("div","empty","Sem vendas nesse período."));
+  cs.append(cc); m.append(cs);
+
+  const g=el("div","sec"); g.append(el("h2",null,"Números do período"));
+  const on=pedidosDe(f).filter(p=>grupoDe(p)==="online");
+  const tkOn=on.length?on.reduce((s,p)=>s+p.bruto+p.frete_cobrado,0)/on.length:0;
+  const gg=el("div","g2");
+  gg.append(kpi("🛒 Ticket online",on.length?brl2(tkOn):"—",
+    on.length?`${num(on.length)} pedidos · ${num(t.qtd)} peças`:"sem pedidos"));
+  gg.append(kpi("📍 Média por ato",evs.length?brl2(evs.reduce((s,e)=>s+e.bruto,0)/evs.length):"—",
+    evs.length?`${num(evs.length)} atos no período`:"sem atos"));
+  gg.append(kpi("📣 CAC",on.length&&t.ads?brl2(t.ads/on.length):"—","ADs por pedido online"));
   gg.append(kpi("🔁 ROAS",t.roas?t.roas.toFixed(2)+"x":"—","o que entrou ÷ ADs"));
   g.append(gg); m.append(g);
 
-  const gs = el("div","sec");
+  const gs=el("div","sec");
   gs.append(el("h2",null,"Evolução",'<span class="r">toque numa barra</span>'));
   gs.append(grupoChips([["dia","Dia"],["semana","Semana"],["mes","Mês"]],S.gran,
     v=>{S.gran=v;S.sel=null;render();}));
-  const dados = serie(f);
+  const dados=serie(f);
   gs.append(chart(dados,"receita"));
   if(S.sel){
-    const d = dados.find(x=>x.k===S.sel);
+    const d=dados.find(x=>x.k===S.sel);
     if(d){
       const c=el("div","card"); c.style.marginTop="10px";
-      c.append(linha({ic:"📅",t:rotulo(d.k),s:`${d.n} pedidos${d.ads?" · ADs "+brl(d.ads):""}`,
+      c.append(linha({ic:"📅",t:rotulo(d.k),s:`${d.n} vendas${d.ads?" · ADs "+brl(d.ads):""}`,
         a:brl(d.receita),b:"lucro "+brl(d.lucro),cls:d.lucro<0?"neg":"pos",
         onclick:()=>abrirPeriodo(d)}));
       gs.append(c);
@@ -519,149 +742,101 @@ function vResumo(){
   }
   m.append(gs);
 
-  const cs = el("div","sec"); cs.append(el("h2",null,"Por canal",'<span class="r">toque p/ filtrar</span>'));
-  const cc = el("div","card");
-  const porCanal = {};
-  pedidosDe(f).forEach(p=>{
-    const k=p.canal||"outro"; (porCanal[k] ||= {n:0,r:0,m:0});
-    porCanal[k].n++; porCanal[k].r+=receita(p); porCanal[k].m+=margem(p);
-  });
-  const lista = Object.entries(porCanal).sort((a,b)=>b[1].r-a[1].r);
-  const maxR = Math.max(...lista.map(v=>v[1].r),1);
-  lista.forEach(([k,v])=>{
-    const r = linha({ic:ICON[k]||"•",t:NOME[k]||k,
-      s:`${v.n} pedidos · margem ${pct(v.r?v.m/v.r*100:0)}`,
-      a:brl(v.r),b:brl(v.m)+" margem",cls:v.m<0?"neg":"pos",
-      onclick:()=>{S.canal=S.canal===k?null:k;render();}});
-    if(S.canal===k) r.style.background="var(--bg3)";
-    const pb=el("div","pb"); pb.innerHTML=`<i style="width:${v.r/maxR*100}%"></i>`;
-    r.querySelector(".mid").append(pb);
-    cc.append(r);
-  });
-  if(!lista.length) cc.append(el("div","empty","Sem vendas nesse período."));
-  cs.append(cc);
-  if(S.canal){
-    const b=el("button","btn g","✕ limpar filtro"); b.onclick=()=>{S.canal=null;render();};
-    b.style.marginTop="10px"; cs.append(b);
+  const pend=pendentes();
+  if(pend.length){
+    const s=el("div","sec"); s.append(el("h2",null,"Esperando você"));
+    const c=el("div","card");
+    c.append(linha({ic:"❓",t:`${pend.length} Pix diretos sem classificar`,
+      s:`${brl(pend.reduce((a,p)=>a+p.bruto,0))} parados fora da conta`,a:"›",
+      onclick:()=>{S.view="triagem";window.scrollTo(0,0);render();}}));
+    s.append(c); m.append(s);
   }
-  m.append(cs);
 
-  /* lucro no papel x dinheiro no bolso */
-  const inv = D.compras.reduce((s,c)=>s+c.valor,0);
-  const emEstoque = D.estoque.reduce((s,e)=>s+(+e.valor_total||0),0);
+  const inv=D.compras.reduce((s,c)=>s+c.valor,0);
+  const emEstoque=D.estoque.reduce((s,e)=>s+(+e.valor_total||0),0);
   const sq=el("div","sec"); sq.append(el("h2",null,"Lucro no papel × dinheiro no bolso"));
   const cq=el("div","card");
-  cq.append(linha({ic:"📈",t:"Lucro operacional",s:"o que a operação gerou no período",
-    a:`<span class="${t.lucro<0?"neg":"pos"}">${brl(t.lucro)}</span>`}));
-  cq.append(linha({ic:"📦",t:"Parado em estoque",s:"mercadoria comprada e ainda não vendida",
-    a:brl(emEstoque),onclick:()=>{S.view="mais";render();}}));
+  cq.append(linha({ic:"📈",t:"Sobrou no período",s:"depois de tudo, inclusive fixos",
+    a:`<span class="${liquido<0?"neg":"pos"}">${brl(liquido)}</span>`}));
+  cq.append(linha({ic:"📦",t:"Parado em estoque",s:"comprado e ainda não vendido",
+    a:brl(emEstoque),onclick:detEstoque}));
   cq.append(linha({ic:"🏗️",t:"Já investido no total",s:"estoque + equipamento + embalagem",
     a:brl(inv),onclick:detInvestimento}));
-  cq.append(el("div","note","O lucro acima é <b>de verdade</b>, mas boa parte dele não está em dinheiro: virou estoque. Enquanto o estoque não vende, o caixa fica apertado mesmo com a operação no azul."));
+  cq.append(el("div","note","O lucro acima é <b>de verdade</b>, mas boa parte não está em dinheiro: virou estoque. Enquanto o estoque não vende, o caixa aperta mesmo com a operação no azul."));
   sq.append(cq); m.append(sq);
 
-  const al = alertas(f,t);
+  const al=alertas(f,t);
   if(al.length){
     const s=el("div","sec"); s.append(el("h2",null,"⚠️ Precisa de atenção"));
     const c=el("div","card"); al.forEach(a=>c.append(a)); s.append(c); m.append(s);
   }
   return m;
 }
-function detFixos(f,t,fx){
-  const ativos = D.fixos.filter(x=>x.ativo!==false);
-  const mensal = ativos.reduce((s,x)=>s+(+x.valor_mensal||0),0);
-  const prop = mensal ? fx/mensal : 0;
-  const c=el("div"), box=el("div","card");
-  ativos.sort((a,b)=>(+b.valor_mensal||0)-(+a.valor_mensal||0)).forEach(x=>
-    box.append(linha({t:x.item,s:`${brl2(+x.valor_mensal||0)}/mês · ${x.categoria||""}`,
-      a:brl2((+x.valor_mensal||0)*prop)})));
-  c.append(box);
-  c.append(dl([
-    ["Lucro operacional", brl2(t.lucro)],
-    ["Custos fixos no período","−"+brl2(fx),"neg"],
-    ["<b>Sobra de verdade</b>",`<b class="${t.lucro-fx<0?"neg":"pos"}">${brl2(t.lucro-fx)}</b>`],
-  ]));
-  c.append(el("div","note","A ajudante entra <b>aqui</b>, não no custo por peça — ela é paga por mês, venda muito ou pouco. Por isso a margem de cada pedido é <b>margem de contribuição</b>: o que sobra antes dos fixos. Edite os valores em <b>Custos</b>."));
-  abrir("Custos fixos", c);
-}
-function detInvestimento(){
-  const cat={};
-  D.compras.forEach(c=>{ const k=c.categoria||"outros"; (cat[k] ||= {n:0,v:0}); cat[k].n++; cat[k].v+=c.valor; });
-  const tot=D.compras.reduce((s,c)=>s+c.valor,0);
-  const c=el("div"), box=el("div","card");
-  Object.entries(cat).sort((a,b)=>b[1].v-a[1].v).forEach(([k,v])=>{
-    const r=linha({ic:ICONC[k]||"📦",t:k,s:`${v.n} compra${v.n>1?"s":""}`,
-      a:brl(v.v),b:pct(v.v/tot*100)});
-    const pb=el("div","pb"); pb.innerHTML=`<i style="width:${v.v/tot*100}%"></i>`;
-    r.querySelector(".mid").append(pb);
-    box.append(r);
-  });
-  c.append(box);
-  const lista=el("div","card"); lista.style.marginTop="14px";
-  D.compras.slice().sort((a,b)=>b.valor-a.valor).forEach(x=>
-    lista.append(linha({t:x.item,s:`${x.data?dbr(x.data):"sem data"}${x.fornecedor?" · "+x.fornecedor:""}`,
-      a:brl(x.valor)})));
-  c.append(el("div","note","Abaixo, compra a compra. Isto é <b>investimento</b>, não despesa: só vira custo no painel quando a peça é vendida."));
-  c.append(lista);
-  abrir("Investimento — "+brl(tot), c);
-}
-const ICONC = {broche:"🔴",pin:"📌",copo:"🥤",almofada:"🧸",equipamento:"🖥️",
-               embalagem:"📦",marketing:"📣",conteudo:"🎬",insumo:"🖨️"};
 function alertas(f,t){
   const out=[];
-  const gap = t.fretePago - t.freteCob;
+  const gap=t.fretePago-t.freteCob;
   if(gap>0) out.push(linha({ic:"🚚",t:"Frete no prejuízo",
     s:`paguei ${brl(t.fretePago)} e cobrei ${brl(t.freteCob)}`,
     a:`<span class="neg">−${brl(gap)}</span>`,onclick:()=>detFrete(f)}));
   if(t.ads>0 && t.ads>t.margem) out.push(linha({ic:"📣",t:"ADs maiores que a margem",
     s:`ADs ${brl(t.ads)} · margem ${brl(t.margem)}`,
-    a:`<span class="neg">${brl(t.margem-t.ads)}</span>`,onclick:()=>{S.view="custos";render();}}));
-  const rua = pedidosDe(f).filter(p=>p.canal==="pix_qr"||p.canal==="maquininha"||p.canal==="dinheiro").length;
-  if(rua>0) out.push(linha({ic:"📦",t:"Custo de rua é estimado",
-    s:`${rua} vendas usam ${D.par.cogs_rua_pct?.valor_num||22}% de custo — o MP não informa o produto`,
-    a:"›",onclick:()=>{S.view="mais";render();}}));
+    a:`<span class="neg">${brl(t.margem-t.ads)}</span>`,
+    onclick:()=>{S.view="custos";render();}}));
+  const semNome=eventosDe(f).filter(e=>/confirmar/i.test(e.nome));
+  if(semNome.length) out.push(linha({ic:"📍",t:`${semNome.length} atos sem nome`,
+    s:"a lista de eventos está defasada",a:"›",
+    onclick:()=>{S.view="atos";window.scrollTo(0,0);render();}}));
   return out;
 }
 
-/* -------- sheets de detalhe -------- */
+/* -------- sheets (nivel 3) -------- */
 function detReceita(f){
-  const t=totais(f);
-  abrir("Receita do período", dl([
-    ["Produtos", brl2(t.prod+t.desconto)],
+  const t=totais(f), pg=porGrupo(f), c=el("div");
+  c.append(dl([
+    ["Produtos",brl2(t.prod+t.desconto)],
     t.desconto?["Descontos e cupons","−"+brl2(t.desconto),"neg"]:null,
-    ["Frete cobrado do cliente", brl2(t.freteCob)],
-    ["<b>Entrou no caixa</b>", "<b>"+brl2(t.caixa)+"</b>"],
-    ["Frete que eu paguei", "−"+brl2(t.fretePago), "neg"],
-    ["<b>Receita líquida de frete</b>", "<b>"+brl2(t.caixa-t.fretePago)+"</b>"],
+    ["Frete cobrado do cliente",brl2(t.freteCob)],
+    ["<b>Entrou no caixa</b>","<b>"+brl2(t.caixa)+"</b>"],
+    ["Frete que eu paguei","−"+brl2(t.fretePago),"neg"],
+    ["<b>Receita líquida de frete</b>","<b>"+brl2(t.caixa-t.fretePago)+"</b>"],
   ]));
+  const box=el("div","card"); box.style.marginTop="14px";
+  Object.entries(pg).sort((a,b)=>b[1].r-a[1].r).forEach(([g,v])=>
+    box.append(linha({ic:GICON[g],t:GNOME[g]||g,s:`${v.n} vendas`,a:brl2(v.r),
+      b:pct(t.receita?v.r/t.receita*100:0)})));
+  c.append(box);
+  abrir("Receita do período",c);
 }
 function detFrete(f){
-  const ps = pedidosDe(f).filter(p=>p.frete_pago||p.frete_cobrado);
-  const cob = ps.reduce((s,p)=>s+p.frete_cobrado,0);
-  const pag = ps.reduce((s,p)=>s+p.frete_pago,0);
-  const gratis = ps.filter(p=>p.frete_cobrado===0 && p.frete_pago>0);
-  const gp = gratis.reduce((s,p)=>s+p.frete_pago,0);
-  const c = el("div");
+  const ps=pedidosDe(f).filter(p=>p.frete_pago||p.frete_cobrado);
+  const cob=ps.reduce((s,p)=>s+p.frete_cobrado,0), pag=ps.reduce((s,p)=>s+p.frete_pago,0);
+  const gratis=ps.filter(p=>p.frete_cobrado===0&&p.frete_pago>0);
+  const c=el("div");
   c.append(dl([
-    ["Frete cobrado dos clientes", brl2(cob)],
-    ["Frete pago às transportadoras", "−"+brl2(pag), "neg"],
-    ["<b>Resultado do frete</b>", `<b class="${cob-pag<0?"neg":"pos"}">${brl2(cob-pag)}</b>`],
-    ["Pedidos com frete grátis", num(gratis.length)+" de "+num(ps.length)],
-    ["Quanto o frete grátis custou", "−"+brl2(gp), "neg"],
+    ["Frete cobrado dos clientes",brl2(cob)],
+    ["Frete pago às transportadoras","−"+brl2(pag),"neg"],
+    ["<b>Resultado do frete</b>",`<b class="${cob-pag<0?"neg":"pos"}">${brl2(cob-pag)}</b>`],
+    ["Pedidos com frete grátis",num(gratis.length)+" de "+num(ps.length)],
+    ["Quanto o frete grátis custou","−"+brl2(gratis.reduce((s,p)=>s+p.frete_pago,0)),"neg"],
   ]));
-  const tr={};
-  ps.forEach(p=>{
-    const m=(p.obs||"").match(/#\d+\s+(.*)/);
-    const k=(m&&m[1])||"sem transportadora";
-    (tr[k] ||= {n:0,c:0,p:0}); tr[k].n++; tr[k].c+=p.frete_cobrado; tr[k].p+=p.frete_pago;
-  });
-  const box=el("div","card"); box.style.marginTop="14px";
-  Object.entries(tr).sort((a,b)=>(b[1].p-b[1].c)-(a[1].p-a[1].c)).slice(0,12).forEach(([k,v])=>
-    box.append(linha({t:k,s:`${v.n} envios · cobrei ${brl(v.c)}`,a:brl2(v.p),
+  const pt=porTransportadora(f);
+  const b1=el("div","card"); b1.style.marginTop="14px";
+  Object.entries(pt).sort((a,b)=>b[1].p-a[1].p).forEach(([k,v])=>
+    b1.append(linha({ic:k==="Correios"?"📮":k==="Melhor Envio"?"🚚":"📦",t:k,
+      s:`${v.n} envios · cobrei ${brl(v.c)}`,a:brl2(v.p),
       b:brl2(v.c-v.p),cls:v.c-v.p<0?"neg":"pos"})));
-  c.append(box);
-  c.append(el("div","note","À direita: quanto <b>você pagou</b> à transportadora e, abaixo, o resultado (cobrado − pago). Vermelho = você bancou a diferença."));
-  abrir("Frete", c);
+  c.append(el("div","note","<b>Quem levou seu dinheiro.</b> À direita o que você pagou; embaixo o resultado (cobrado − pago)."));
+  c.append(b1);
+  const sv={};
+  ps.forEach(p=>{ const k=servico(p.obs); (sv[k] ||= {n:0,c:0,p:0});
+    sv[k].n++; sv[k].c+=p.frete_cobrado; sv[k].p+=p.frete_pago; });
+  const b2=el("div","card"); b2.style.marginTop="14px";
+  Object.entries(sv).sort((a,b)=>(b[1].p-b[1].c)-(a[1].p-a[1].c)).forEach(([k,v])=>
+    b2.append(linha({t:k,s:`${v.n} envios · cobrei ${brl(v.c)}`,a:brl2(v.p),
+      b:brl2(v.c-v.p),cls:v.c-v.p<0?"neg":"pos"})));
+  c.append(el("div","note","<b>Serviço a serviço</b>, do pior resultado pro melhor."));
+  c.append(b2);
+  abrir("Frete",c);
 }
 function detTaxas(f){
   const porC={};
@@ -672,120 +847,337 @@ function detTaxas(f){
     box.append(linha({ic:ICON[k]||"•",t:NOME[k]||k,s:`${v.n} pedidos sobre ${brl(v.b)}`,
       a:brl2(v.t),b:pct(v.b?v.t/v.b*100:0)})));
   c.append(box);
-  c.append(el("div","note","As taxas do <b>Mercado Pago</b> vêm reais da API, pagamento a pagamento. As do <b>site</b> (Nuvem Pago) são calculadas por percentual — confira no extrato e ajuste em <b>Mais › Parâmetros</b>."));
-  abrir("Taxas de pagamento", c);
-}
-function detComissao(f){
-  const por={};
-  pedidosDe(f).filter(p=>p.comissao>0).forEach(p=>{
-    const k=(p.vendedor||"sem nome")+"||"+(p.evento||"");
-    (por[k] ||= {n:0,b:0,c:0}); por[k].n++; por[k].b+=p.bruto; por[k].c+=p.comissao;
-  });
-  const box=el("div","card");
-  Object.entries(por).forEach(([k,v])=>{
-    const [vend,ev]=k.split("||");
-    box.append(linha({ic:"🤝",t:vend,s:`${ev} · ${v.n} vendas de ${brl(v.b)}`,
-      a:brl2(v.c),b:pct(v.b?v.c/v.b*100:0)}));
-  });
-  abrir("Comissões", box);
+  c.append(el("div","note","As taxas do <b>Mercado Pago</b> vêm reais da API. As do <b>site</b> (Nuvem Pago) são calculadas por percentual — confira no extrato e ajuste em <b>Mais › Parâmetros</b>."));
+  abrir("Taxas de pagamento",c);
 }
 function detProdutos(f){
-  const ids = new Set(pedidosDe(f).map(p=>p.id));
-  const agg={};
+  const ids=new Set(pedidosDe(f).map(p=>p.id)), agg={};
   D.itens.forEach(i=>{ if(!ids.has(i.pedido_id)) return;
-    const k=i.produto||"—"; (agg[k] ||= {q:0,r:0,c:0});
+    const k=i.produto||"—"; (agg[k] ||= {q:0,r:0,c:0,fam:familia(i.produto)});
     agg[k].q+=i.qtd; agg[k].r+=i.qtd*i.preco_un; agg[k].c+=i.qtd*i.custo_un; });
-  const box=el("div","card");
-  const lista=Object.entries(agg).sort((a,b)=>b[1].r-a[1].r);
-  if(!lista.length) box.append(el("div","empty","Só os pedidos do site registram item a item."));
-  lista.slice(0,50).forEach(([k,v])=>box.append(linha({t:k,
-    s:`${num(v.q)} un · custo ${brl2(v.c)}`,a:brl2(v.r),
-    b:"margem "+pct(v.r?(v.r-v.c)/v.r*100:0),cls:"pos"})));
-  const c=el("div"); c.append(box);
-  c.append(el("div","note","Item a item existe só nos pedidos do <b>site</b>. Nas vendas de rua o Mercado Pago não informa qual produto foi vendido — lá o custo entra por percentual."));
-  abrir("Produtos vendidos", c);
+  const fam={};
+  Object.entries(agg).forEach(([k,v])=>{ (fam[v.fam] ||= []).push([k,v]); });
+  const c=el("div");
+  Object.entries(fam)
+    .sort((a,b)=>b[1].reduce((s,x)=>s+x[1].r,0)-a[1].reduce((s,x)=>s+x[1].r,0))
+    .forEach(([k,lista])=>{
+      const r=lista.reduce((s,x)=>s+x[1].r,0), cu=lista.reduce((s,x)=>s+x[1].c,0);
+      const q=lista.reduce((s,x)=>s+x[1].q,0);
+      c.append(el("div","note",
+        `<b>${FICON[k]||"📦"} ${k}</b> — ${num(q)} un · ${brl2(r)} · margem ${pct(r?(r-cu)/r*100:0)}`));
+      const box=el("div","card"); box.style.marginTop="6px";
+      lista.sort((a,b)=>b[1].r-a[1].r).forEach(([n,v])=>box.append(linha({t:n,
+        s:`${num(v.q)} un · custo ${brl2(v.c)}`,a:brl2(v.r),
+        b:"margem "+pct(v.r?(v.r-v.c)/v.r*100:0),cls:"pos"})));
+      c.append(box);
+    });
+  if(!Object.keys(fam).length) c.append(el("div","empty","Só os pedidos online registram item a item."));
+  c.append(el("div","note","Item a item existe só nos pedidos <b>online</b>. Nos atos o Mercado Pago não informa o produto — lá o custo entra por percentual."));
+  abrir("Produtos vendidos",c);
 }
 function abrirPeriodo(d){
-  const ps = D.pedidos.filter(p=>chaveGran(p.data)===d.k && (!S.canal||p.canal===S.canal))
-                      .sort((a,b)=>b.bruto-a.bruto);
+  const ps=D.pedidos.filter(p=>vale(p)&&chaveGran(p.data)===d.k
+    &&(!S.grupo||grupoDe(p)===S.grupo)).sort((a,b)=>b.bruto-a.bruto);
   const c=el("div");
   c.append(dl([
     ["Receita",brl2(d.receita)],
     ["Margem de contribuição",brl2(d.margem)],
     d.ads?["ADs no período","−"+brl2(d.ads),"neg"]:null,
     ["<b>Lucro</b>",`<b class="${d.lucro<0?"neg":"pos"}">${brl2(d.lucro)}</b>`],
-    ["Pedidos",num(d.n)],
+    ["Vendas",num(d.n)],
   ]));
   const box=el("div","card"); box.style.marginTop="14px";
   ps.slice(0,60).forEach(p=>box.append(rowPedido(p)));
-  if(ps.length>60) box.append(el("div","empty",`+ ${ps.length-60} pedidos`));
+  if(ps.length>60) box.append(el("div","empty",`+ ${ps.length-60} vendas`));
   c.append(box);
-  abrir(rotulo(d.k), c);
+  abrir(rotulo(d.k),c);
 }
+function detEstoque(){
+  const c=el("div"), box=el("div","card");
+  const tot=D.estoque.reduce((s,e)=>s+(+e.valor_total||0),0), fam={};
+  D.estoque.forEach(e=>{ const k=familia(e.descricao); (fam[k] ||= {v:0,q:0,n:0});
+    fam[k].v+=+e.valor_total||0; fam[k].q+=+e.quantidade||0; fam[k].n++; });
+  Object.entries(fam).sort((a,b)=>b[1].v-a[1].v).forEach(([k,v])=>
+    box.append(linha({ic:FICON[k]||"📦",t:k,s:`${num(v.q)} un em ${v.n} lote(s)`,
+      a:brl(v.v),b:pct(tot?v.v/tot*100:0)})));
+  c.append(box);
+  const det=el("div","card"); det.style.marginTop="14px";
+  D.estoque.slice().sort((a,b)=>(+b.valor_total||0)-(+a.valor_total||0)).forEach(e=>
+    det.append(linha({t:e.descricao,s:`${num(+e.quantidade||0)} un × ${brl2(+e.custo_unitario||0)}`,
+      a:brl(+e.valor_total||0)})));
+  c.append(el("div","note","Lote a lote:")); c.append(det);
+  abrir("Estoque — "+brl(tot),c);
+}
+function detInvestimento(){
+  const cat={}, tot=D.compras.reduce((s,c)=>s+c.valor,0);
+  D.compras.forEach(c=>{ const k=c.categoria||"outros"; (cat[k] ||= {n:0,v:0});
+    cat[k].n++; cat[k].v+=c.valor; });
+  const c=el("div"), box=el("div","card");
+  Object.entries(cat).sort((a,b)=>b[1].v-a[1].v).forEach(([k,v])=>{
+    const r=linha({ic:ICONC[k]||"📦",t:k,s:`${v.n} compra${v.n>1?"s":""}`,
+      a:brl(v.v),b:pct(v.v/tot*100)});
+    const pb=el("div","pb"); pb.innerHTML=`<i style="width:${v.v/tot*100}%"></i>`;
+    r.querySelector(".mid").append(pb); box.append(r);
+  });
+  c.append(box);
+  c.append(el("div","note","Isto é <b>investimento</b>, não despesa: só vira custo no painel quando a peça é vendida."));
+  const lista=el("div","card"); lista.style.marginTop="6px";
+  D.compras.slice().sort((a,b)=>b.valor-a.valor).forEach(x=>
+    lista.append(linha({t:x.item,s:`${x.data?dbr(x.data):"sem data"}${x.fornecedor?" · "+x.fornecedor:""}`,
+      a:brl(x.valor)})));
+  c.append(lista);
+  abrir("Investimento — "+brl(tot),c);
+}
+const ICONC={broche:"🔴",pin:"📌",copo:"🥤",almofada:"🧸",equipamento:"🖥️",
+             embalagem:"📦",marketing:"📣",conteudo:"🎬",insumo:"🖨️"};
 
-/* ==================================================== view: vendas ====== */
-function vVendas(){
-  const f=faixa(), m=el("div"), t=totais(f);
-  m.append(grupoChips([["dia","Por dia"],["semana","Por semana"],["mes","Por mês"]],S.gran,
+/* ==================================================== view: canal ======= */
+function vCanal(){
+  const f=faixa(), g=S.grupo, t=totais(f), m=el("div");
+  const ps=pedidosDe(f);
+
+  const volta=el("button","btn g","‹ Voltar ao resumo");
+  volta.style.marginBottom="12px";
+  volta.onclick=()=>{S.grupo=null;S.canal=null;S.view="resumo";window.scrollTo(0,0);render();};
+  m.append(volta);
+
+  const hero=el("div","card"), h=el("div","hero");
+  h.innerHTML=`<div class="lbl">${GICON[g]} ${GNOME[g]} <span class="tag">${f[2]}</span></div>
+    <div class="big">${brl(t.receita)}</div>
+    <div class="meta">
+      <span class="pill ${t.margem<0?"neg":"pos"}">margem ${pct(t.receita?t.margem/t.receita*100:0)}</span>
+      <span class="pill">${num(t.n)} pedidos</span>
+      <span class="pill">ticket ${brl2(t.ticket)}</span>
+    </div>`;
+  hero.append(h);
+  const R=t.receita||1, wf=el("div","wf");
+  wf.append(lnCascata({dot:"var(--blue)",nome:"Receita",val:t.receita,base:R}));
+  if(t.cogs) wf.append(lnCascata({dot:"var(--amber)",nome:"Custo do produto",val:t.cogs,neg:true,base:R,
+    itens:Object.entries(porFamilia(f)).sort((a,b)=>b[1].c-a[1].c)
+      .map(([k,v])=>({n:(FICON[k]||"📦")+" "+k,v:v.c})),verTudo:()=>detProdutos(f)}));
+  if(t.fretePago) wf.append(lnCascata({dot:"var(--purple)",nome:"Frete que eu paguei",
+    sub:`cobrei ${brl(t.freteCob)}`,val:t.fretePago,neg:true,base:R,
+    itens:Object.entries(porTransportadora(f)).sort((a,b)=>b[1].p-a[1].p)
+      .map(([k,v])=>({n:k,v:v.p})),verTudo:()=>detFrete(f)}));
+  if(t.taxa) wf.append(lnCascata({dot:"var(--tx3)",nome:"Taxas",val:t.taxa,neg:true,base:R}));
+  if(t.comissao+t.custoEvento) wf.append(lnCascata({dot:"var(--tx3)",nome:"Custo dos atos",
+    val:t.comissao+t.custoEvento,neg:true,base:R}));
+  if(t.ads) wf.append(lnCascata({dot:"var(--red)",nome:"Anúncios (ADs)",
+    sub:`ROAS ${t.roas.toFixed(1)}x · CAC ${brl2(t.n?t.ads/t.n:0)}`,val:t.ads,neg:true,base:R}));
+  wf.append(lnCascata({dot:"var(--green)",nome:"Margem",sub:"antes dos custos fixos",
+    val:t.margem-t.ads,base:R,total:true}));
+  hero.append(wf); m.append(hero);
+
+  /* estatisticas do canal */
+  const st=el("div","sec"); st.style.marginTop="20px";
+  st.append(el("h2",null,"Estatísticas"));
+  const gg=el("div","g2");
+  gg.append(kpi("🎟️ Ticket médio",brl2(t.ticket),`${num(t.n)} pedidos`));
+  gg.append(kpi("📦 Peças",t.qtd?num(t.qtd):"—",t.qtd?brl2(t.prod/t.qtd)+" por peça":"não contabilizado"));
+  gg.append(kpi("💰 Margem R$",brl(t.margem),"antes de ADs e fixos"));
+  gg.append(kpi("📊 Margem %",pct(t.receita?t.margem/t.receita*100:0),"sobre a receita"));
+  st.append(gg); m.append(st);
+
+  /* sub-canais: SO no segundo nivel */
+  const sub={};
+  ps.forEach(p=>{ (sub[p.canal] ||= {n:0,r:0,m:0}); sub[p.canal].n++;
+    sub[p.canal].r+=receita(p); sub[p.canal].m+=margem(p); });
+  if(Object.keys(sub).length>1){
+    const ss=el("div","sec"); ss.append(el("h2",null,"Como recebi"));
+    const sc=el("div","card");
+    Object.entries(sub).sort((a,b)=>b[1].r-a[1].r).forEach(([k,v])=>
+      sc.append(linha({ic:ICON[k]||"•",t:NOME[k]||k,s:`${v.n} pedidos`,a:brl(v.r),
+        b:pct(t.receita?v.r/t.receita*100:0),
+        onclick:()=>{S.canal=S.canal===k?null:k;render();}})));
+    ss.append(sc); m.append(ss);
+    if(S.canal){
+      const b=el("button","btn g","✕ limpar filtro"); b.style.marginTop="10px";
+      b.onclick=()=>{S.canal=null;render();}; m.append(b);
+    }
+  }
+
+  const gs=el("div","sec"); gs.append(el("h2",null,"Evolução"));
+  gs.append(grupoChips([["dia","Dia"],["semana","Semana"],["mes","Mês"]],S.gran,
     v=>{S.gran=v;S.sel=null;render();}));
+  gs.append(chart(serie(f),"receita")); m.append(gs);
 
-  const ant=faixaAnterior(), ta=ant?totais(ant):null;
-  const dv = ta&&ta.receita ? (t.receita-ta.receita)/ta.receita*100 : null;
-  const g=el("div","g2"); g.style.marginBottom="16px";
-  g.append(kpi("💵 Receita",brl(t.receita),
-    dv!=null?`${dv>=0?"▲":"▼"} ${pct(Math.abs(dv))} vs anterior`:f[2]));
-  g.append(kpi("📈 Lucro",brl(t.lucro),"margem "+pct(t.mg)));
-  m.append(g);
+  if(g==="online"){
+    const uf={};
+    ps.forEach(p=>{ if(!p.uf) return; (uf[p.uf] ||= {n:0,r:0}); uf[p.uf].n++; uf[p.uf].r+=receita(p); });
+    if(Object.keys(uf).length){
+      const su=el("div","sec"); su.append(el("h2",null,"Para onde vendi"));
+      const cu=el("div","card");
+      Object.entries(uf).sort((a,b)=>b[1].r-a[1].r).slice(0,12).forEach(([k,v])=>
+        cu.append(linha({ic:"📍",t:k,s:`${v.n} pedidos`,a:brl(v.r),
+          b:pct(t.receita?v.r/t.receita*100:0)})));
+      su.append(cu); m.append(su);
+    }
+  }
 
-  const dados = serie(f);
-  const s1=el("div","sec"); s1.append(el("h2",null,"Receita",'<span class="r">toque numa barra</span>'));
-  s1.append(chart(dados,"receita")); m.append(s1);
-  const s2=el("div","sec"); s2.append(el("h2",null,"Lucro (já descontando ADs)"));
-  s2.append(chart(dados,"lucro")); m.append(s2);
+  const sp=el("div","sec"); sp.append(el("h2",null,"Produtos"));
+  const cp=el("div","card");
+  const pf=porFamilia(f), totC=Object.values(pf).reduce((s,v)=>s+v.r,0);
+  Object.entries(pf).sort((a,b)=>b[1].r-a[1].r).forEach(([k,v])=>
+    cp.append(linha({ic:FICON[k]||"📦",t:k,s:v.q?`${num(v.q)} un · custo ${brl(v.c)}`:"custo estimado",
+      a:v.r?brl(v.r):brl(v.c),b:v.r?"margem "+pct((v.r-v.c)/v.r*100):"",cls:"pos"})));
+  if(!Object.keys(pf).length) cp.append(el("div","empty","Sem itens registrados."));
+  sp.append(cp); m.append(sp);
 
-  const s3=el("div","sec");
-  s3.append(el("h2",null,S.gran==="dia"?"Dia a dia":S.gran==="semana"?"Semana a semana":"Mês a mês"));
-  const c=el("div","card");
-  [...dados].reverse().forEach(d=>c.append(linha({ic:"📅",t:rotulo(d.k),
-    s:`${d.n} pedidos${d.ads?" · ADs "+brl(d.ads):""}`,
-    a:brl(d.receita),b:brl(d.lucro)+" lucro",cls:d.lucro<0?"neg":"pos",
-    onclick:()=>abrirPeriodo(d)})));
-  if(!dados.length) c.append(el("div","empty","Sem vendas nesse período."));
-  s3.append(c); m.append(s3);
-
-  const ev={};
-  pedidosDe(f).forEach(p=>{ if(!p.evento) return;
-    (ev[p.evento] ||= {n:0,r:0,m:0,d:p.data});
-    ev[p.evento].n++; ev[p.evento].r+=receita(p); ev[p.evento].m+=margem(p); });
-  if(Object.keys(ev).length){
-    const s4=el("div","sec"); s4.append(el("h2",null,"Eventos e ruas"));
-    const cc=el("div","card");
-    Object.entries(ev).sort((a,b)=>a[1].d<b[1].d?1:-1).forEach(([k,v])=>
-      cc.append(linha({ic:"📍",t:k,s:`${dbr(v.d)} · ${v.n} vendas`,a:brl(v.r),
-        b:brl(v.m)+" sobrou",cls:v.m<0?"neg":"pos",onclick:()=>abrirEvento(k)})));
-    s4.append(cc); m.append(s4);
+  const sl=el("div","sec"); sl.append(el("h2",null,"Pedidos",`<span class="r">${num(ps.length)}</span>`));
+  const cl=el("div","card");
+  ps.slice().sort((a,b)=>a.data<b.data?1:-1).slice(0,40).forEach(p=>cl.append(rowPedido(p)));
+  if(!ps.length) cl.append(el("div","empty","Nenhum pedido."));
+  sl.append(cl); m.append(sl);
+  if(ps.length>40){
+    const b=el("button","btn g",`Ver todos os ${num(ps.length)} pedidos`);
+    b.style.marginTop="10px";
+    b.onclick=()=>{S.view="pedidos";window.scrollTo(0,0);render();}; m.append(b);
   }
   return m;
 }
-function abrirEvento(nome){
-  const ps=D.pedidos.filter(p=>p.evento===nome);
-  const t={r:0,m:0,c:0,cogs:0,tx:0};
-  ps.forEach(p=>{ t.r+=p.bruto+p.frete_cobrado; t.m+=margem(p);
-                  t.c+=p.comissao; t.cogs+=p.cogs; t.tx+=p.taxa; });
+
+/* ==================================================== view: atos ======== */
+function vAtos(){
+  const f=faixa(), m=el("div");
+  const evs=eventosDe(f);
+  const tot=evs.reduce((a,e)=>({b:a.b+e.bruto,r:a.r+e.resultado,c:a.c+e.com+e.extra}),{b:0,r:0,c:0});
+
+  if(S.grupo){
+    const volta=el("button","btn g","‹ Voltar ao resumo"); volta.style.marginBottom="12px";
+    volta.onclick=()=>{S.grupo=null;S.view="resumo";window.scrollTo(0,0);render();};
+    m.append(volta);
+  }
+
+  const hero=el("div","card"), h=el("div","hero");
+  h.innerHTML=`<div class="lbl">📍 Atos e eventos <span class="tag">${f[2]}</span></div>
+    <div class="big">${brl(tot.b)}</div>
+    <div class="meta">
+      <span class="pill">${num(evs.length)} ato${evs.length===1?"":"s"}</span>
+      <span class="pill ${tot.r<0?"neg":"pos"}">sobrou ${brl(tot.r)}</span>
+      <span class="pill">média ${brl(evs.length?tot.b/evs.length:0)}</span>
+    </div>`;
+  hero.append(h); m.append(hero);
+
+  const s=el("div","sec"); s.style.marginTop="18px";
+  s.append(el("h2",null,"Cada ato",'<span class="r">toque p/ editar</span>'));
+  const c=el("div","card");
+  const maxB=Math.max(...evs.map(e=>e.bruto),1);
+  evs.forEach(e=>{
+    const r=linha({ic:e.avulso?"·":/confirmar/i.test(e.nome)?"❓":"📍",t:e.nome,
+      s:e.avulso?`${e.n} vendas soltas`
+        :`${dbr(e.data)}${e.vendedor?" · "+e.vendedor:""}${e.local?" · "+e.local:""} · ticket ${brl2(e.n?e.bruto/e.n:0)}`,
+      a:brl(e.bruto),b:brl(e.resultado)+" sobrou",cls:e.resultado<0?"neg":"pos",
+      onclick:()=>detEvento(e)});
+    const pb=el("div","pb"); pb.innerHTML=`<i style="width:${e.bruto/maxB*100}%"></i>`;
+    r.querySelector(".mid").append(pb);
+    c.append(r);
+  });
+  if(!evs.length) c.append(el("div","empty","Nenhum ato nesse período."));
+  s.append(c); m.append(s);
+
+  const b=el("button","btn","+ Registrar ato / venda em dinheiro");
+  b.style.marginTop="12px"; b.onclick=formVenda; m.append(b);
+
+  return m;
+}
+function detEvento(e){
   const c=el("div");
+  if(e.avulso){
+    c.append(el("div","note","Estes são dias soltos com pouca venda na rua — o painel junta todos numa linha só pra não poluir a lista de atos. Se algum deles foi um ato de verdade, lance pelo botão <b>+ Registrar ato</b>."));
+  }
   c.append(dl([
-    ["Faturamento",brl2(t.r)],
-    ["Custo do produto","−"+brl2(t.cogs),"neg"],
-    t.tx?["Taxas","−"+brl2(t.tx),"neg"]:null,
-    t.c?["Comissão do vendedor","−"+brl2(t.c),"neg"]:null,
-    ["<b>Sobrou</b>",`<b class="${t.m<0?"neg":"pos"}">${brl2(t.m)}</b>`],
-    ["Vendas",num(ps.length)],
-    ["Ticket médio",brl2(ps.length?t.r/ps.length:0)],
+    ["Faturamento",brl2(e.bruto)],
+    ["Custo do produto","−"+brl2(e.cogs),"neg"],
+    e.taxa?["Taxas de cartão/Pix","−"+brl2(e.taxa),"neg"]:null,
+    e.com?[`Comissão${e.vendedor?" — "+esc(e.vendedor):""} (${pct(e.pct)})`,"−"+brl2(e.com),"neg"]:null,
+    e.extra?[esc(e.extraDesc||"Despesas do dia"),"−"+brl2(e.extra),"neg"]:null,
+    ["<b>Sobrou</b>",`<b class="${e.resultado<0?"neg":"pos"}">${brl2(e.resultado)}</b>`],
+    ["Vendas",num(e.n)],
+    ["Ticket médio",brl2(e.n?e.bruto/e.n:0)],
   ]));
+  /* como recebeu: SO aqui, no detalhe */
   const box=el("div","card"); box.style.marginTop="14px";
-  ps.slice().sort((a,b)=>b.bruto-a.bruto).slice(0,80).forEach(p=>box.append(rowPedido(p)));
+  Object.entries(e.porCanal).sort((a,b)=>b[1]-a[1]).forEach(([k,v])=>
+    box.append(linha({ic:ICON[k]||"•",t:NOME[k]||k,a:brl2(v),
+      b:pct(e.bruto?v/e.bruto*100:0)})));
+  c.append(el("div","note","Como o dinheiro entrou:"));
   c.append(box);
-  abrir(nome,c);
+
+  /* edicao */
+  if(e.avulso){ abrir(e.nome,c); return; }
+  const campos=[["nome","Nome do ato","text",e.nome],["local","Local","text",e.local],
+    ["vendedor","Quem vendeu","text",e.vendedor],
+    ["comissao_pct","Comissão (%)","number",e.pct],
+    ["custo_extra","Outras despesas (R$)","number",e.extra],
+    ["custo_desc","O que foi essa despesa","text",e.extraDesc]];
+  const ins={};
+  const form=el("div"); form.style.marginTop="16px";
+  campos.forEach(([k,l,t,v])=>{
+    const lb=el("label","f",`<span>${l}</span>`); const i=el("input");
+    i.type=t; i.value=v??""; if(t==="number") i.step="0.01";
+    lb.append(i); ins[k]=i; form.append(lb);
+  });
+  const bt=el("button","btn","Salvar ato");
+  bt.onclick=async()=>{
+    const payload={data:e.data, nome:ins.nome.value||null, local:ins.local.value||null,
+      vendedor:ins.vendedor.value||null, comissao_pct:+ins.comissao_pct.value||0,
+      custo_extra:+ins.custo_extra.value||0, custo_desc:ins.custo_desc.value||null};
+    const {error}=await sb.from("fin_eventos").upsert(payload,{onConflict:"data"});
+    if(error) return toast("Erro: "+error.message);
+    /* a comissao vive no pedido; recalcula os do dia com o novo % */
+    const pct2=+ins.comissao_pct.value||0;
+    const alvo=D.pedidos.filter(p=>p.data===e.data&&grupoDe(p)==="evento");
+    await Promise.all(alvo.map(p=>sb.from("fin_pedidos")
+      .update({comissao:+(p.bruto*pct2/100).toFixed(2), evento:ins.nome.value||null}).eq("id",p.id)));
+    fechar(); toast("Ato salvo"); await carregar(); render();
+  };
+  form.append(bt); c.append(form);
+  abrir(e.nome,c);
+}
+
+/* ==================================================== view: triagem ===== */
+function vTriagem(){
+  const m=el("div"), pend=pendentes().slice().sort((a,b)=>a.data<b.data?1:-1);
+  m.append(el("div","note",`<b>Pix que caiu direto na conta.</b> O Mercado Pago não diz o que é:
+    pode ser atacado fechado no WhatsApp, venda avulsa, empréstimo de família, aporte seu ou
+    repasse de gateway. Enquanto não classificar, fica <b>fora de todos os números</b>.
+    O palpite ao lado é só um chute pra acelerar.`));
+
+  const total=pend.reduce((s,p)=>s+p.bruto,0);
+  const g=el("div","g2"); g.style.margin="14px 0";
+  g.append(kpi("❓ Sem classificar",num(pend.length),"de "+num(pendentes().length+
+    D.pedidos.filter(p=>p.origem==="mp"&&p.canal==="atacado").length)+" Pix diretos"));
+  g.append(kpi("💰 Valor parado",brl(total),"fora da conta"));
+  m.append(g);
+
+  const c=el("div","card");
+  pend.forEach(p=>{
+    const palpite=(p.obs||"").replace("palpite:","");
+    const bloco=el("div"); bloco.style.borderTop="1px solid var(--line)";
+    bloco.append(linha({ic:"❓",t:brl2(p.bruto),
+      s:`${dbr(p.data)}${p.cliente?" · "+p.cliente:""} · palpite: ${palpite}`}));
+    const acoes=el("div"); acoes.style.cssText="display:flex;gap:6px;padding:0 15px 12px;flex-wrap:wrap";
+    const OP=[["atacado","📦 Atacado","atacado"],["varejo","📱 Venda avulsa","pix_qr"],
+              ["emprestimo","🤝 Empréstimo",null],["repasse","🏦 Repasse",null],["ignorar","🚫 Ignorar",null]];
+    OP.forEach(([k,rot,canal])=>{
+      const b=el("button","chip"+(palpite===k?" alt on":""),rot);
+      b.onclick=async()=>{
+        const cogsPct=+(D.par.cogs_rua_pct?.valor_num||22);
+        const upd = canal
+          ? {canal, status:"pago", cogs:+(p.bruto*cogsPct/100).toFixed(2), obs:"classificado: "+k}
+          : {canal:"nao_venda", status:"excluido", obs:"classificado: "+k};
+        const {error}=await sb.from("fin_pedidos").update(upd).eq("id",p.id);
+        if(error) return toast("Erro");
+        toast(rot.replace(/^\S+\s/,"")+" ✓");
+        await carregar(); render();
+      };
+      acoes.append(b);
+    });
+    bloco.append(acoes); c.append(bloco);
+  });
+  if(!pend.length) c.append(el("div","empty","Tudo classificado. 🎉"));
+  m.append(c);
+  return m;
 }
 
 /* ==================================================== view: pedidos ===== */
@@ -801,8 +1193,11 @@ function vPedidos(){
   const f=faixa(), t=totais(f), m=el("div");
   const ps=pedidosDe(f).slice().sort((a,b)=>a.data<b.data?1:a.data>b.data?-1:(b.id-a.id));
 
-  m.append(grupoChips([[null,"Todos"],["site","Site"],["pix_qr","Pix rua"],["maquininha","Maquininha"],
-    ["dinheiro","Dinheiro"],["checkout_mp","Link MP"]],S.canal,v=>{S.canal=v;render();},true));
+  const volta=el("button","btn g","‹ Voltar"); volta.style.marginBottom="12px";
+  volta.onclick=()=>{S.view=S.grupo==="evento"?"atos":S.grupo?"canal":"resumo";window.scrollTo(0,0);render();};
+  m.append(volta);
+  m.append(grupoChips([[null,"Tudo"],["online","Online"],["evento","Atos"],["atacado","Atacado"]],
+    S.grupo,v=>{S.grupo=v;S.canal=null;render();},true));
 
   const busca=el("input");
   busca.placeholder="Buscar cliente, evento, nº do pedido…";
@@ -942,11 +1337,19 @@ function vCustos(){
 /* ==================================================== view: mais ======== */
 function vMais(){
   const m=el("div");
+  const pend=pendentes();
 
   const s0=el("div","sec"); s0.append(el("h2",null,"Ações"));
   const c0=el("div","card");
+  if(pend.length) c0.append(linha({ic:"❓",t:"Classificar Pix diretos",
+    s:`${pend.length} pendentes · ${brl(pend.reduce((a,p)=>a+p.bruto,0))} fora da conta`,a:"›",
+    onclick:()=>{S.view="triagem";window.scrollTo(0,0);render();}}));
+  c0.append(linha({ic:"📍",t:"Atos e eventos",s:"nomear, comissão e despesas do dia",a:"›",
+    onclick:()=>{S.view="atos";S.grupo="evento";window.scrollTo(0,0);render();}}));
   c0.append(linha({ic:"💵",t:"Lançar venda em dinheiro",s:"o que não passa por MP nem site",
     a:"›",onclick:formVenda}));
+  c0.append(linha({ic:"🧾",t:"Todos os pedidos",s:"lista completa com busca",a:"›",
+    onclick:()=>{S.view="pedidos";S.grupo=null;window.scrollTo(0,0);render();}}));
   c0.append(linha({ic:"📥",t:"Exportar pedidos (CSV)",s:"abre no Excel",a:"›",onclick:exportar}));
   c0.append(linha({ic:"⚙️",t:"Parâmetros de custo",s:"taxas do site, custo estimado de rua",
     a:"›",onclick:formParam}));
@@ -954,49 +1357,104 @@ function vMais(){
     onclick:async()=>{ await sb.auth.signOut(); location.reload(); }}));
   s0.append(c0); m.append(s0);
 
+  /* divida: cada credor abre o detalhe */
   const saldo=D.emprestimos.reduce((s,e)=>s+(+e.saldo||0),0);
-  const aPagar=D.parcelas.filter(p=>!p.pago).reduce((s,p)=>s+(+p.valor||0),0);
+  const naoPagas=D.parcelas.filter(p=>!p.pago);
+  const aPagar=naoPagas.reduce((s,p)=>s+(+p.valor||0),0);
   const s1=el("div","sec"); s1.append(el("h2",null,"Dívida",`<span class="r">${brl(saldo+aPagar)}</span>`));
   const c1=el("div","card");
-  D.emprestimos.forEach(e=>c1.append(linha({ic:"🤝",t:e.credor,
-    s:e.finalidade||"sem juros, sem prazo",a:brl(+e.saldo||0),
-    b:e.quitar_em?"quitar "+dbr(e.quitar_em):""})));
-  c1.append(linha({ic:"💳",t:"Parcelas a vencer",
-    s:`${D.parcelas.filter(p=>!p.pago).length} parcelas`,a:brl(aPagar)}));
+  D.emprestimos.slice().sort((a,b)=>(+b.saldo||0)-(+a.saldo||0)).forEach(e=>
+    c1.append(linha({ic:"🤝",t:e.credor,s:e.finalidade||"sem juros, sem prazo",
+      a:brl(+e.saldo||0),b:e.quitar_em?"quitar "+dbr(e.quitar_em):"",
+      onclick:()=>detEmprestimo(e)})));
+  c1.append(linha({ic:"💳",t:"Parcelas a vencer",s:`${naoPagas.length} parcelas no cartão`,
+    a:brl(aPagar),onclick:detParcelas}));
   s1.append(c1); m.append(s1);
 
   const inv=D.compras.reduce((s,c)=>s+c.valor,0);
-  const si=el("div","sec"); si.append(el("h2",null,"Investimento",`<span class="r">${brl(inv)}</span>`));
-  const ci=el("div","card");
-  const cat={};
-  D.compras.forEach(c=>{ const k=c.categoria||"outros"; (cat[k] ||= 0); cat[k]+=c.valor; });
-  Object.entries(cat).sort((a,b)=>b[1]-a[1]).forEach(([k,v])=>
-    ci.append(linha({ic:ICONC[k]||"📦",t:k,s:pct(v/inv*100)+" do investido",a:brl(v),
-      onclick:detInvestimento})));
-  si.append(ci); m.append(si);
-
   const vEst=D.estoque.reduce((s,e)=>s+(+e.valor_total||0),0);
-  const s2=el("div","sec"); s2.append(el("h2",null,"Estoque",`<span class="r">${brl(vEst)} a custo</span>`));
+  const s2=el("div","sec"); s2.append(el("h2",null,"Onde o dinheiro está"));
   const c2=el("div","card");
-  D.estoque.slice().sort((a,b)=>(+b.valor_total||0)-(+a.valor_total||0)).slice(0,14).forEach(e=>
-    c2.append(linha({t:e.descricao,s:`${num(+e.quantidade||0)} un × ${brl2(+e.custo_unitario||0)}`,
-      a:brl(+e.valor_total||0)})));
+  c2.append(linha({ic:"🏗️",t:"Investimento total",s:"estoque + equipamento + embalagem",
+    a:brl(inv),onclick:detInvestimento}));
+  c2.append(linha({ic:"📦",t:"Estoque a custo",s:"o que ainda tem pra vender",
+    a:brl(vEst),onclick:detEstoque}));
+  const eq=D.compras.filter(c=>(c.categoria||"")==="equipamento");
+  if(eq.length) c2.append(linha({ic:"🖥️",t:"Equipamentos",
+    s:`${eq.length} itens · não vira custo de venda`,
+    a:brl(eq.reduce((s,c)=>s+c.valor,0)),onclick:detEquipamento}));
   s2.append(c2); m.append(s2);
 
   const s3=el("div","sec"); s3.append(el("h2",null,"De onde vêm estes números"));
   const c3=el("div","card");
   c3.append(el("div","note",`
-    <b>Vendas</b> vêm de 3 fontes: pedidos do <b>site</b> (Nuvemshop — com frete cobrado e frete pago reais,
+    Este painel é <b>só da Brochevique</b> — nada de Filhote, drone ou imóveis.<br><br>
+    <b>Vendas</b> vêm de 3 lugares: <b>site</b> (Nuvemshop, com frete cobrado e frete pago reais,
     item a item), <b>Mercado Pago</b> (Pix QR, maquininha e link, com a taxa real de cada pagamento)
     e lançamentos <b>manuais</b> de dinheiro.<br><br>
-    <b>Não entram</b> como venda: cashback do Meli, operações de cripto, caixinhas e Pix de
-    transferência (empréstimo, aporte, atacado). Era exatamente isso que inflava os números antes.<br><br>
-    <b>Custo do produto</b>: item a item no site; nas vendas de rua, por percentual
+    <b>Um ato é um evento</b>, não 300 vendinhas: o painel junta tudo do dia num resultado só.<br><br>
+    <b>Não entram</b> como venda: cashback do Meli, cripto e caixinhas. Pix que cai direto na conta
+    fica <b>parado na triagem</b> até você dizer o que é.<br><br>
+    <b>Custo do produto</b>: item a item no online; nos atos, por percentual
     (${D.par.cogs_rua_pct?.valor_num||22}%), porque o MP não informa o produto.<br><br>
-    <b>ADs</b> vêm do Meta, dia a dia. <b>Custos fixos</b> entram rateados por dia no período.`));
+    <b>Custos fixos</b> (inclusive a ajudante, ${brl(somaFixos())}/mês) entram rateados por dia
+    e já estão descontados do "Sobrou" lá em cima.`));
   s3.append(c3); m.append(s3);
   return m;
 }
+function detEmprestimo(e){
+  const c=el("div");
+  c.append(dl([
+    ["Credor",esc(e.credor)],
+    ["Saldo devedor",brl2(+e.saldo||0)],
+    ["Valor original",brl2(+e.valor||0)],
+    ["Juros",e.juros_am?pct(+e.juros_am):"sem juros"],
+    ["Prazo",e.sem_prazo?"sem prazo":(e.quitar_em?dbr(e.quitar_em):"—")],
+    e.quitar_em?["Quitar em",dbr(e.quitar_em)]:null,
+    ["Finalidade",esc(e.finalidade||"—")],
+    e.quem_paga?["Quem paga",esc(e.quem_paga)]:null,
+  ]));
+  if(e.observacao) c.append(el("div","note",esc(e.observacao)));
+  const rel=D.parcelas.filter(p=>(p.quem_paga||"").toLowerCase().includes((e.credor||"").toLowerCase().split(" ")[0]));
+  if(rel.length){
+    const box=el("div","card"); box.style.marginTop="14px";
+    rel.forEach(p=>box.append(linha({t:`Parcela ${p.numero}`,s:dbr(p.vencimento),
+      a:brl2(+p.valor||0),b:p.pago?"paga":"a vencer",cls:p.pago?"pos":""})));
+    c.append(box);
+  }
+  abrir(e.credor,c);
+}
+function detParcelas(){
+  const c=el("div"), naoPagas=D.parcelas.filter(p=>!p.pago);
+  const porMes={};
+  naoPagas.forEach(p=>{ const k=(p.vencimento||"").slice(0,7);
+    (porMes[k] ||= {n:0,v:0}); porMes[k].n++; porMes[k].v+=+p.valor||0; });
+  const box=el("div","card");
+  Object.entries(porMes).sort().forEach(([k,v])=>
+    box.append(linha({ic:"📅",t:MES[+k.slice(5,7)-1]+"/"+k.slice(2,4),
+      s:`${v.n} parcela${v.n>1?"s":""}`,a:brl2(v.v)})));
+  c.append(el("div","note","Quanto sai por mês:"));
+  c.append(box);
+  const det=el("div","card"); det.style.marginTop="14px";
+  naoPagas.slice().sort((a,b)=>(a.vencimento||"")<(b.vencimento||"")?-1:1).forEach(p=>
+    det.append(linha({t:`Parcela ${p.numero}`,s:`${dbr(p.vencimento)}${p.quem_paga?" · "+p.quem_paga:""}`,
+      a:brl2(+p.valor||0)})));
+  c.append(det);
+  abrir("Parcelas a vencer — "+brl(naoPagas.reduce((s,p)=>s+(+p.valor||0),0)),c);
+}
+function detEquipamento(){
+  const eq=D.compras.filter(c=>(c.categoria||"")==="equipamento")
+    .sort((a,b)=>b.valor-a.valor);
+  const tot=eq.reduce((s,c)=>s+c.valor,0);
+  const c=el("div"), box=el("div","card");
+  eq.forEach(x=>box.append(linha({ic:"🖥️",t:x.item,
+    s:`${x.data?dbr(x.data):"sem data"}${x.fornecedor?" · "+x.fornecedor:""}`,
+    a:brl2(x.valor),b:pct(tot?x.valor/tot*100:0)})));
+  c.append(box);
+  c.append(el("div","note","Equipamento é <b>investimento</b>, não custo de venda: não entra na margem de nenhum pedido. Ele volta pra você em forma de produção, não de estoque."));
+  abrir("Equipamentos — "+brl(tot),c);
+}
+
 function formVenda(){
   const c=el("div"), ins={};
   [["data","Data","date",hojeISO()],["bruto","Valor total (R$)","number",""],
@@ -1017,7 +1475,11 @@ function formVenda(){
       bruto, cogs:+(bruto*cogsPct/100).toFixed(2), comissao:+ins.comissao.value||0,
       metodo:"dinheiro", status:"pago"});
     if(error) return toast("Erro: "+error.message);
-    fechar(); toast("Venda lançada"); await carregar(); render();
+    if(ins.evento.value){
+      await sb.from("fin_eventos").upsert({data:ins.data.value, nome:ins.evento.value,
+        vendedor:ins.vendedor.value||null},{onConflict:"data"});
+    }
+    fechar(); toast("Lançado"); await carregar(); render();
   };
   c.append(b);
   abrir("Venda em dinheiro", c);
@@ -1059,27 +1521,40 @@ function exportar(){
 
 /* ==================================================== render ============ */
 const VIEWS = {
-  resumo: {t:"Resumo",  n:"📊", f:vResumo},
-  vendas: {t:"Vendas",  n:"📈", f:vVendas},
-  pedidos:{t:"Pedidos", n:"🧾", f:vPedidos},
-  custos: {t:"Custos",  n:"💸", f:vCustos},
-  mais:   {t:"Mais",    n:"⚙️", f:vMais},
+  resumo: {t:"Resumo", n:"📊", f:vResumo,  grupo:null},
+  vendas: {t:"Vendas", n:"📈", f:vCanal,   grupo:"online"},
+  atos:   {t:"Atos",   n:"📍", f:vAtos,    grupo:"evento"},
+  custos: {t:"Custos", n:"💸", f:vCustos,  grupo:null},
+  mais:   {t:"Mais",   n:"⚙️", f:vMais,    grupo:null},
 };
+/* telas alcancadas por dentro, sem lugar na barra de baixo */
+const VIEWS_OCULTAS = {
+  canal:   {t:"Canal",   f:vCanal},
+  pedidos: {t:"Pedidos", f:vPedidos},
+  triagem: {t:"Triagem", f:vTriagem},
+};
+const VIEW = k => VIEWS[k] || VIEWS_OCULTAS[k];
 function render(){
   const f=faixa();
-  $("#tit").textContent = VIEWS[S.view].t;
+  const V=VIEW(S.view)||VIEWS.resumo;
+  $("#tit").textContent = S.view==="canal"&&S.grupo ? GNOME[S.grupo] : V.t;
   $("#sub").textContent = f[2] + (S.canal?" · "+(NOME[S.canal]||S.canal):"");
+  document.title = "Painel Brochevique";
   const cp=$("#chipsPer"); cp.innerHTML="";
   [["hoje","Hoje"],["7d","7 dias"],["30d","30 dias"],["mes","Este mês"],["tudo","Tudo"]].forEach(([v,l])=>{
     const b=el("button","chip"+(S.periodo===v?" on":""),l);
     b.onclick=()=>{S.periodo=v;S.sel=null;render();}; cp.append(b);
   });
   const nv=$("#nav"); nv.innerHTML="";
+  const ativa = S.view==="canal"?"vendas" : S.view==="pedidos"?(S.grupo==="evento"?"atos":"vendas") : S.view;
   Object.entries(VIEWS).forEach(([k,v])=>{
-    const b=el("button",S.view===k?"on":"",`<span class="n">${v.n}</span>${v.t}`);
-    b.onclick=()=>{S.view=k;S.sel=null;window.scrollTo(0,0);render();}; nv.append(b);
+    const b=el("button",ativa===k?"on":"",`<span class="n">${v.n}</span>${v.t}`);
+    b.onclick=()=>{S.view=k;S.grupo=v.grupo;S.canal=null;S.sel=null;window.scrollTo(0,0);render();};
+    nv.append(b);
   });
-  const vw=$("#view"); vw.innerHTML=""; vw.append(VIEWS[S.view].f());
+  const vw=$("#view"); vw.innerHTML="";
+  try{ vw.append((VIEW(S.view)||VIEWS.resumo).f()); }
+  catch(e){ vw.append(el("div","empty","Erro ao montar a tela: "+esc(e.message))); throw e; }
 }
 
 /* ==================================================== boot ============== */

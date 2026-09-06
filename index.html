@@ -278,7 +278,7 @@ function segunda(s){ const d=new Date(s+"T12:00:00"); const w=(d.getDay()+6)%7;
 const S = { view:"resumo", periodo:"30d", frete:"com", gran:"dia",
             grupo:null, canal:null, sel:null, voltar:null };
 const D = { pedidos:[], itens:[], itensPor:{}, ads:[], fixos:[], produtos:[],
-            emprestimos:[], parcelas:[], estoque:[], compras:[], eventos:[], evPor:{}, central:[], par:{} };
+            emprestimos:[], parcelas:[], estoque:[], compras:[], eventos:[], evPor:{}, central:[], variaveis:[], par:{} };
 
 /* ============================================================ carga ===== */
 async function carregar(){
@@ -300,13 +300,14 @@ async function carregar(){
       if(de>50000) return tudo;
     }
   };
-  const [pedidos,itens,ads,fixos,produtos,emp,parc,est,par,compras,eventos,central] = await Promise.all([
+  const [pedidos,itens,ads,fixos,produtos,emp,parc,est,par,compras,eventos,central,variaveis] = await Promise.all([
     q("fin_pedidos","data"), q("fin_pedido_itens","pedido_id"), q("fin_ads","data"),
     q("fin_custos_fixos"), q("fin_produtos"), q("fin_emprestimos"),
     q("fin_parcelas","vencimento"), q("fin_estoque"), q("fin_parametros"),
     q("fin_compras","data"), q("fin_eventos","data"),
-    q("fin_central_pedidos","id_pedido","id_pedido"),
+    q("fin_central_pedidos","id_pedido","id_pedido"), q("fin_custos_variaveis"),
   ]);
+  D.variaveis = variaveis||[];
   D.central = (central||[]).map(c=>({...c, total:+c.total||0, valor_pago:+c.valor_pago||0}));
   D.eventos = (eventos||[]).map(e=>({...e,
     comissao_pct:+e.comissao_pct||0, custo_extra:+e.custo_extra||0}));
@@ -392,6 +393,9 @@ function totais(f){
     t.cogs+=p.cogs; t.comissao+=p.comissao;
     t.receita+=receita(p); t.margem+=margem(p);
   });
+  /* embalagem: R$/pedido enviado. Vinha de fora e nao entrava em conta nenhuma. */
+  t.embalagem = embalagemUn() * ps.filter(p=>grupoDe(p)==="online").length;
+  t.margem -= t.embalagem;
   t.ads     = ads.reduce((s,a)=>s+a.gasto,0);
   t.cliques = ads.reduce((s,a)=>s+a.cliques,0);
   t.caixa   = t.prod + t.freteCob;
@@ -680,6 +684,15 @@ function porGrupo(f){
       .reduce((z,e)=>z+(+e.custo_extra||0),0);
     o.evento.extra=ex; o.evento.m-=ex;
   }
+  /* fecha a conta por canal: embalagem, ADs (so online) e a parte dos fixos */
+  const emb=embalagemUn(), fxTot=fixoNoPeriodo(f);
+  const adsTot=D.ads.filter(x=>x.data>=f[0]&&x.data<=f[1]).reduce((z,a)=>z+a.gasto,0);
+  const totR=Object.values(o).reduce((z,v)=>z+v.r,0);
+  Object.entries(o).forEach(([g,v])=>{
+    if(g==="online"){ v.emb=emb*v.n; v.m-=v.emb; v.ads=adsTot; } else { v.emb=0; v.ads=0; }
+    v.fixo = totR ? fxTot*(v.r/totR) : 0;
+    v.liq  = v.m - v.ads - v.fixo;
+  });
   return o;
 }
 function porFamilia(f){
@@ -739,6 +752,24 @@ function eventosDe(f){
   return atos;
 }
 const somaFixos = () => D.fixos.filter(x=>x.ativo!==false).reduce((s,x)=>s+(+x.valor_mensal||0),0);
+/* embalagem so existe em pedido que e enviado (online) */
+const embalagemUn = () => {
+  const c=(D.variaveis||[]).find(x=>/embalagem/i.test(x.item||""));
+  return c ? (+c.valor_fixo||0) : 0;
+};
+/* receita do periodo INTEIRA, ignorando o filtro de canal — base do rateio */
+function receitaDoPeriodo(f){
+  return D.pedidos.filter(p=>vale(p)&&p.data>=f[0]&&p.data<=f[1])
+    .reduce((z,p)=>z+p.bruto-p.desconto+p.frete_cobrado,0);
+}
+/* custo fixo que cabe a este recorte: proporcional ao que ele fatura.
+   A ajudante e paga do mesmo caixa — nao existe margem "antes" dela. */
+function fixoDoRecorte(f, t){
+  const total=receitaDoPeriodo(f);
+  const fx=fixoNoPeriodo(f);
+  if(!S.grupo && !S.canal) return fx;
+  return total ? fx * (t.caixa/total) : 0;
+}
 
 /* ==================================================== view: resumo ====== */
 function vResumo(){
@@ -761,7 +792,7 @@ function vResumo(){
   h.innerHTML = `<div class="lbl">💰 Sobrou no período <span class="tag">${f[2]}</span></div>
     <div class="big ${liquido<0?"neg":"pos"}">${brl(liquido)}</div>
     <div class="meta">
-      <span class="pill ${mgLiq<0?"neg":"pos"}">margem ${pct(mgLiq)}</span>
+      <span class="pill ${mgLiq<0?"neg":"pos"}">${pct(mgLiq)} do que entrou</span>
       <span class="pill">${num(nVendas)} vendas${nAtos?" · "+num(nAtos)+" atos":""}</span>
       ${varia!=null?`<span class="pill ${varia<0?"neg":"pos"}">${varia>0?"▲":"▼"} ${pct(Math.abs(varia))} vs ${ant&&ant[2]?ant[2]:"anterior"}</span>`:""}
     </div>`;
@@ -801,6 +832,8 @@ function vResumo(){
       verTudo:()=>detFrete(f),rotuloTudo:"Ver serviço a serviço"}));
   }
 
+  if(t.embalagem) wf.append(lnCascata({dot:"var(--tx3)",nome:"Embalagem",
+    sub:`${brl2(embalagemUn())} por pedido enviado · estimado`,val:t.embalagem,neg:true,base:R}));
   if(t.taxa) wf.append(lnCascata({dot:"var(--tx3)",nome:"Taxas de pagamento",
     sub:"Mercado Pago + Nuvem Pago",val:t.taxa,neg:true,base:R,
     itens:["online","evento","atacado"].filter(g=>pg[g]&&pg[g].taxa)
@@ -843,10 +876,10 @@ function vResumo(){
   ["online","evento","atacado"].forEach(g=>{
     const v=pg[g]; if(!v) return;
     const sub = g==="evento"
-      ? `${nAtos} ato${nAtos===1?"":"s"} · ${pct(v.r?v.m/v.r*100:0)} de margem`
-      : `${v.n} pedidos · ${pct(v.r?v.m/v.r*100:0)} de margem`;
-    const r=linhaExp({ic:GICON[g],t:GNOME[g],s:sub,a:brl(v.r),b:brl(v.m),
-      cls:v.m<0?"neg":"pos",
+      ? `${nAtos} ato${nAtos===1?"":"s"} · ${pct(v.r?v.liq/v.r*100:0)} do bolso`
+      : `${v.n} pedidos · ${pct(v.r?v.liq/v.r*100:0)} do bolso`;
+    const r=linhaExp({ic:GICON[g],t:GNOME[g],s:sub,a:brl(v.r),b:brl(v.liq),
+      cls:v.liq<0?"neg":"pos",
       resumo:()=>{
         const ps=pedidosDe(f).filter(x=>grupoDe(x)===g);
         const tk=ps.length?ps.reduce((z,x)=>z+x.bruto-x.desconto+x.frete_cobrado,0)/ps.length:0;
@@ -858,7 +891,13 @@ function vResumo(){
         if(tx) linhas.push({n:"Taxas",v:tx,t:"−"+brl2(tx),cls:"neg",barra:false});
         if(g==="evento") linhas.push({n:"Atos no período",v:0,t:num(nAtos),barra:false});
         if(g==="online") linhas.push({n:"Peças vendidas",v:0,t:num(ps.reduce((z,x)=>z+x.qtd,0)),barra:false});
-        linhas.push({n:"Margem",v:v.m,t:brl2(v.m),cls:v.m<0?"neg":"pos",barra:false});
+        linhas.push({n:"Margem antes de ADs e fixos",v:v.m,t:brl2(v.m),
+                     cls:v.m<0?"neg":"pos",barra:false});
+        if(v.ads) linhas.push({n:"Anúncios",v:v.ads,t:"−"+brl2(v.ads),cls:"neg",barra:false});
+        if(v.fixo) linhas.push({n:"Custos fixos (parte deste canal)",v:v.fixo,
+                     t:"−"+brl2(v.fixo),cls:"neg",barra:false});
+        linhas.push({n:"Sobrou de verdade",v:v.liq,t:brl2(v.liq),
+                     cls:v.liq<0?"neg":"pos",barra:false});
         return linhas;
       },
       verTudo:()=>irPara(g==="evento"?"atos":"canal",{grupo:g,canal:null}),
@@ -1109,10 +1148,11 @@ function vCanal(){
   if(S.voltar) m.append(btVoltar());
 
   const hero=el("div","card"), h=el("div","hero");
+  const fxc=fixoDoRecorte(f,t), sobra=t.margem-t.ads-fxc;
   h.innerHTML=`<div class="lbl">${GICON[g]} ${GNOME[g]} <span class="tag">${f[2]}</span></div>
     <div class="big">${brl(t.receita)}</div>
     <div class="meta">
-      <span class="pill ${t.margem<0?"neg":"pos"}">margem ${pct(t.receita?t.margem/t.receita*100:0)}</span>
+      <span class="pill ${sobra<0?"neg":"pos"}">sobrou ${brl(sobra)} · ${pct(t.caixa?sobra/t.caixa*100:0)}</span>
       <span class="pill">${num(t.n)} pedidos</span>
       <span class="pill">ticket ${brl2(t.ticket)}</span>
     </div>`;
@@ -1128,13 +1168,21 @@ function vCanal(){
     sub:`cobrei ${brl(t.freteCob)}`,val:t.fretePago,neg:true,base:R,
     itens:Object.entries(porTransportadora(f)).sort((a,b)=>b[1].p-a[1].p)
       .map(([k,v])=>({n:k,v:v.p})),verTudo:()=>detFrete(f)}));
+  if(t.embalagem) wf.append(lnCascata({dot:"var(--tx3)",nome:"Embalagem",
+    sub:`${brl2(embalagemUn())} por pedido · estimado`,val:t.embalagem,neg:true,base:R}));
   if(t.taxa) wf.append(lnCascata({dot:"var(--tx3)",nome:"Taxas",val:t.taxa,neg:true,base:R}));
   if(t.comissao+t.custoEvento) wf.append(lnCascata({dot:"var(--tx3)",nome:"Custo dos atos",
     val:t.comissao+t.custoEvento,neg:true,base:R}));
   if(t.ads) wf.append(lnCascata({dot:"var(--red)",nome:"Anúncios (ADs)",
     sub:`ROAS ${t.roas.toFixed(1)}x · CAC ${brl2(t.cac)}`,val:t.ads,neg:true,base:R}));
-  wf.append(lnCascata({dot:"var(--green)",nome:"Margem",sub:"antes dos custos fixos",
-    val:t.margem-t.ads,base:R,total:true}));
+  if(fxc>0) wf.append(lnCascata({dot:"var(--tx2)",nome:"Custos fixos",
+    sub:`parte deste canal · ${pct(receitaDoPeriodo(f)?t.caixa/receitaDoPeriodo(f)*100:0)} do faturamento`,
+    val:fxc,neg:true,base:R,
+    itens:D.fixos.filter(x=>x.ativo!==false).sort((a,b)=>(+b.valor_mensal||0)-(+a.valor_mensal||0))
+      .map(x=>({n:x.item, v:(+x.valor_mensal||0)*(fxc/Math.max(1,somaFixos()))})),
+    verTudo:()=>irPara("custos"), rotuloTudo:"Editar custos fixos"}));
+  wf.append(lnCascata({dot:"var(--green)",nome:"Sobrou",sub:"depois de tudo, ajudante inclusive",
+    val:sobra,base:R,total:true}));
   hero.append(wf); m.append(hero);
 
   /* estatisticas do canal */
@@ -1143,8 +1191,8 @@ function vCanal(){
   const gg=el("div","g2");
   gg.append(kpi("🎟️ Ticket médio",brl2(t.ticket),`${num(t.n)} pedidos`));
   gg.append(kpi("📦 Peças",t.qtd?num(t.qtd):"—",t.qtd?brl2(t.prod/t.qtd)+" por peça":"não contabilizado"));
-  gg.append(kpi("💰 Margem R$",brl(t.margem),"antes de ADs e fixos"));
-  gg.append(kpi("📊 Margem %",pct(t.receita?t.margem/t.receita*100:0),"sobre a receita"));
+  gg.append(kpi("💰 Sobrou",brl(sobra),"depois de absolutamente tudo"));
+  gg.append(kpi("📊 Margem real",pct(t.caixa?sobra/t.caixa*100:0),"o que entra no bolso"));
   st.append(gg); m.append(st);
 
   /* sub-canais: SO no segundo nivel */

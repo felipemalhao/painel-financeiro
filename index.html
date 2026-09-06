@@ -393,8 +393,9 @@ function totais(f){
     t.cogs+=p.cogs; t.comissao+=p.comissao;
     t.receita+=receita(p); t.margem+=margem(p);
   });
-  /* embalagem: R$/pedido enviado. Vinha de fora e nao entrava em conta nenhuma. */
-  t.embalagem = embalagemUn() * ps.filter(p=>grupoDe(p)==="online").length;
+  /* embalagem: pedido a pedido, porque copo custa 4x mais caixa que broche */
+  t.embalagem = ps.reduce((z,p)=>z+embalagemDe(p),0);
+  t.nCopo = ps.filter(p=>embalagemDe(p)>embVal("pedido_online")).length;
   t.margem -= t.embalagem;
   t.ads     = ads.reduce((s,a)=>s+a.gasto,0);
   t.cliques = ads.reduce((s,a)=>s+a.cliques,0);
@@ -673,8 +674,8 @@ function porGrupo(f){
   const o={};
   pedidosDe(f).forEach(p=>{
     const g=grupoDe(p); if(!g) return;
-    (o[g] ||= {n:0,r:0,m:0,cogs:0,qtd:0,taxa:0,extra:0});
-    o[g].n++; o[g].r+=receita(p); o[g].m+=margem(p);
+    (o[g] ||= {n:0,r:0,m:0,cogs:0,qtd:0,taxa:0,extra:0,emb:0});
+    o[g].n++; o[g].r+=receita(p); o[g].m+=margem(p); o[g].emb+=embalagemDe(p);
     o[g].cogs+=p.cogs; o[g].qtd+=p.qtd; o[g].taxa+=p.taxa;
   });
   /* despesa do dia do ato (van, quem filmou) e custo do grupo EVENTO — sem isso a
@@ -685,11 +686,11 @@ function porGrupo(f){
     o.evento.extra=ex; o.evento.m-=ex;
   }
   /* fecha a conta por canal: embalagem, ADs (so online) e a parte dos fixos */
-  const emb=embalagemUn(), fxTot=fixoNoPeriodo(f);
+  const fxTot=fixoNoPeriodo(f);
   const adsTot=D.ads.filter(x=>x.data>=f[0]&&x.data<=f[1]).reduce((z,a)=>z+a.gasto,0);
   const totR=Object.values(o).reduce((z,v)=>z+v.r,0);
   Object.entries(o).forEach(([g,v])=>{
-    if(g==="online"){ v.emb=emb*v.n; v.m-=v.emb; v.ads=adsTot; } else { v.emb=0; v.ads=0; }
+    if(g==="online"){ v.m-=v.emb; v.ads=adsTot; } else { v.emb=0; v.ads=0; }
     v.fixo = totR ? fxTot*(v.r/totR) : 0;
     v.liq  = v.m - v.ads - v.fixo;
   });
@@ -752,11 +753,19 @@ function eventosDe(f){
   return atos;
 }
 const somaFixos = () => D.fixos.filter(x=>x.ativo!==false).reduce((s,x)=>s+(+x.valor_mensal||0),0);
-/* embalagem so existe em pedido que e enviado (online) */
-const embalagemUn = () => {
-  const c=(D.variaveis||[]).find(x=>/embalagem/i.test(x.item||""));
+/* Embalagem: so em pedido enviado, e o preco depende do que vai dentro —
+   caixa pequena de broche R$0,70; pedido com copo usa caixa maior, R$3,00. */
+const embVal = base => {
+  const c=(D.variaveis||[]).find(x=>/embalagem/i.test(x.item||"") && x.base===base);
   return c ? (+c.valor_fixo||0) : 0;
 };
+const embalagemUn = () => embVal("pedido_online");
+function embalagemDe(p){
+  if(grupoDe(p)!=="online") return 0;
+  const its = D.itensPor[p.id]||[];
+  const temCopo = its.some(i=>/copo/i.test(i.produto||""));
+  return temCopo ? embVal("pedido_online_copo") : embVal("pedido_online");
+}
 /* receita do periodo INTEIRA, ignorando o filtro de canal — base do rateio */
 function receitaDoPeriodo(f){
   return D.pedidos.filter(p=>vale(p)&&p.data>=f[0]&&p.data<=f[1])
@@ -833,7 +842,8 @@ function vResumo(){
   }
 
   if(t.embalagem) wf.append(lnCascata({dot:"var(--tx3)",nome:"Embalagem",
-    sub:`${brl2(embalagemUn())} por pedido enviado · estimado`,val:t.embalagem,neg:true,base:R}));
+    sub:`${brl2(embVal("pedido_online"))} a caixa pequena${t.nCopo?` · ${num(t.nCopo)} com copo a ${brl2(embVal("pedido_online_copo"))}`:""}`,
+    val:t.embalagem,neg:true,base:R}));
   if(t.taxa) wf.append(lnCascata({dot:"var(--tx3)",nome:"Taxas de pagamento",
     sub:"Mercado Pago + Nuvem Pago",val:t.taxa,neg:true,base:R,
     itens:["online","evento","atacado"].filter(g=>pg[g]&&pg[g].taxa)
@@ -1169,7 +1179,8 @@ function vCanal(){
     itens:Object.entries(porTransportadora(f)).sort((a,b)=>b[1].p-a[1].p)
       .map(([k,v])=>({n:k,v:v.p})),verTudo:()=>detFrete(f)}));
   if(t.embalagem) wf.append(lnCascata({dot:"var(--tx3)",nome:"Embalagem",
-    sub:`${brl2(embalagemUn())} por pedido · estimado`,val:t.embalagem,neg:true,base:R}));
+    sub:`${brl2(embVal("pedido_online"))} a caixa pequena${t.nCopo?` · ${num(t.nCopo)} com copo a ${brl2(embVal("pedido_online_copo"))}`:""}`,
+    val:t.embalagem,neg:true,base:R}));
   if(t.taxa) wf.append(lnCascata({dot:"var(--tx3)",nome:"Taxas",val:t.taxa,neg:true,base:R}));
   if(t.comissao+t.custoEvento) wf.append(lnCascata({dot:"var(--tx3)",nome:"Custo dos atos",
     val:t.comissao+t.custoEvento,neg:true,base:R}));

@@ -6,3 +6,5 @@ sync.py
 __pycache__/
 
 .mp_cache.json
+sync_auto.bat
+sync.log

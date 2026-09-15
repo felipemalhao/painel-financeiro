@@ -373,12 +373,10 @@ const adsDe = f => temAds(S.grupo) ? D.ads.filter(x=>x.data>=f[0] && x.data<=f[1
 const pendentes = () => D.pedidos.filter(p=>p.status==="pendente");
 
 /* ==================================================== nucleo financeiro = */
-function receita(p){
-  const prod = p.bruto - p.desconto;
-  if(S.frete==="produto") return prod;
-  if(S.frete==="liquido") return prod + p.frete_cobrado - p.frete_pago;
-  return prod + p.frete_cobrado;
-}
+/* Faturamento = so o PRODUTO. O frete que o cliente paga nao e venda: ele entra
+   e sai de novo pra transportadora. Por isso aparece como UMA linha de custo
+   liquido (paguei - cobrei). O lucro final nao muda — so a leitura fica certa. */
+function receita(p){ return p.bruto - p.desconto; }
 /* margem de contribuicao: a verdade, nao muda com o modo de exibicao */
 function margem(p){
   return (p.bruto - p.desconto + p.frete_cobrado) - p.frete_pago - p.taxa - p.cogs - p.comissao;
@@ -406,11 +404,11 @@ function totais(f){
   t.margem -= t.custoEvento;
   t.lucro   = t.margem - t.ads;
   t.mg      = t.receita ? t.lucro/t.receita*100 : 0;
-  t.ticket  = t.n ? t.caixa/t.n : 0;
+  t.ticket  = t.n ? t.prod/t.n : 0;
   /* ROAS/CAC so fazem sentido contra o que o anuncio move: o ONLINE.
      Dividir o caixa dos atos pelos ADs dava um ROAS fantasioso. */
   t.caixaOnline = ps.filter(p=>grupoDe(p)==="online")
-    .reduce((a,p)=>a+p.bruto-p.desconto+p.frete_cobrado,0);
+    .reduce((a,p)=>a+p.bruto-p.desconto,0);
   t.nOnline = ps.filter(p=>grupoDe(p)==="online").length;
   t.roas    = t.ads ? t.caixaOnline/t.ads : 0;
   t.cac     = t.nOnline && t.ads ? t.ads/t.nOnline : 0;
@@ -425,7 +423,32 @@ function diasDeVigencia(x, f){
   if(fim < ini) return 0;
   return Math.round((new Date(fim+"T12:00:00")-new Date(ini+"T12:00:00"))/864e5)+1;
 }
-function fixoDe(x, f){ return (+x.valor_mensal||0)/30*diasDeVigencia(x,f); }
+/* Custo fixo do item no periodo, somado dia a dia.
+   Quem ganha por dia trabalhado (Tabata, R$100 seg-sex) so pesa em dia util:
+   sabado e domingo nao tem diaria. O resto (luz, IA, site, DAS) corre todo dia.
+   Assim o lucro de QUALQUER dia ja vem com a ajudante descontada. */
+const _uteisCache = {};
+function _diasMes(d){ return new Date(d.getFullYear(), d.getMonth()+1, 0).getDate(); }
+function _uteisMes(d){
+  const k = d.getFullYear()+"-"+d.getMonth();
+  if(_uteisCache[k]) return _uteisCache[k];
+  let u=0; const n=_diasMes(d);
+  for(let i=1;i<=n;i++){ const w=new Date(d.getFullYear(),d.getMonth(),i).getDay(); if(w>=1&&w<=5) u++; }
+  return (_uteisCache[k]=u);
+}
+function fixoDe(x, f){
+  const primeiro = D.pedidos.length ? D.pedidos.reduce((a,p)=>p.data<a?p.data:a,D.pedidos[0].data) : f[0];
+  const ini = [f[0], x.inicio || primeiro, primeiro].sort().pop();
+  const fim = [f[1], x.fim || f[1]].sort()[0];
+  if(fim < ini) return 0;
+  const v=+x.valor_mensal||0; let tot=0;
+  const d=new Date(ini+"T12:00:00"), df=new Date(fim+"T12:00:00");
+  for(; d<=df; d.setDate(d.getDate()+1)){
+    if(x.so_dias_uteis){ const w=d.getDay(); if(w>=1&&w<=5) tot += v/_uteisMes(d); }
+    else tot += v/_diasMes(d);
+  }
+  return tot;
+}
 function fixoNoPeriodo(f){
   return D.fixos.filter(x=>x.ativo!==false).reduce((s,x)=>s+fixoDe(x,f),0);
 }
@@ -438,7 +461,7 @@ function serie(f){
     const k = chaveGran(p.data);
     (out[k] ||= {k,receita:0,receitaOnline:0,margem:0,n:0,ads:0});
     out[k].receita+=receita(p); out[k].margem+=margem(p); out[k].n++;
-    if(grupoDe(p)==="online") out[k].receitaOnline+=p.bruto-p.desconto+p.frete_cobrado;
+    if(grupoDe(p)==="online") out[k].receitaOnline+=p.bruto-p.desconto;
   });
   adsDe(f).forEach(a=>{
     const k = chaveGran(a.data);
@@ -769,7 +792,7 @@ function embalagemDe(p){
 /* receita do periodo INTEIRA, ignorando o filtro de canal — base do rateio */
 function receitaDoPeriodo(f){
   return D.pedidos.filter(p=>vale(p)&&p.data>=f[0]&&p.data<=f[1])
-    .reduce((z,p)=>z+p.bruto-p.desconto+p.frete_cobrado,0);
+    .reduce((z,p)=>z+p.bruto-p.desconto,0);
 }
 /* custo fixo que cabe a este recorte: proporcional ao que ele fatura.
    A ajudante e paga do mesmo caixa — nao existe margem "antes" dela. */
@@ -777,16 +800,13 @@ function fixoDoRecorte(f, t){
   const total=receitaDoPeriodo(f);
   const fx=fixoNoPeriodo(f);
   if(!S.grupo && !S.canal) return fx;
-  return total ? fx * (t.caixa/total) : 0;
+  return total ? fx * (t.prod/total) : 0;
 }
 
 /* ==================================================== view: resumo ====== */
 function vResumo(){
   const f=faixa(), t=totais(f), m=el("div");
   const fx=fixoNoPeriodo(f), liquido=t.lucro-fx;
-
-  m.append(grupoChips([["com","Receita c/ frete"],["produto","Só produto"],["liquido","Líquido de frete"]],
-    S.frete, v=>{S.frete=v;render();}, true));
 
   const hero=el("div","card"), h=el("div","hero");
   const ant=faixaAnterior(), ta=ant?totais(ant):null;
@@ -797,31 +817,26 @@ function vResumo(){
   const nVendas=pedidosDe(f).filter(p=>grupoDe(p)!=="evento").length;
   /* margem sempre sobre o que entrou de fato (caixa), nao sobre a receita de exibicao —
      senao trocar o modo de frete mudava a margem sem nada ter mudado no negocio */
-  const mgLiq = t.caixa ? liquido/t.caixa*100 : 0;
+  const mgLiq = t.prod ? liquido/t.prod*100 : 0;
   h.innerHTML = `<div class="lbl">💰 Sobrou no período <span class="tag">${f[2]}</span></div>
     <div class="big ${liquido<0?"neg":"pos"}">${brl(liquido)}</div>
     <div class="meta">
-      <span class="pill ${mgLiq<0?"neg":"pos"}">${pct(mgLiq)} do que entrou</span>
+      <span class="pill ${mgLiq<0?"neg":"pos"}">${pct(mgLiq)} da receita</span>
       <span class="pill">${num(nVendas)} vendas${nAtos?" · "+num(nAtos)+" atos":""}</span>
       ${varia!=null?`<span class="pill ${varia<0?"neg":"pos"}">${varia>0?"▲":"▼"} ${pct(Math.abs(varia))} vs ${ant&&ant[2]?ant[2]:"anterior"}</span>`:""}
     </div>`;
   hero.append(h);
 
-  const R=t.caixa||1, wf=el("div","wf");
+  const R=t.prod||1, wf=el("div","wf");
   const pg=porGrupo(f);
 
   wf.append(lnCascata({dot:"var(--blue)",nome:"Receita",
-    sub: S.frete==="produto"?"só produtos, sem frete"
-       : S.frete==="liquido"?"produtos + frete cobrado − frete pago"
-       : "produtos + frete cobrado", val:t.receita, base:R,
+    sub:"produtos vendidos, sem o frete", val:t.receita, base:R,
     itens:["online","evento","atacado"].filter(g=>pg[g]).map(g=>({
       n:(GICON[g]||"")+" "+GNOME[g], v:pg[g].r,
       onclick:()=>irPara(g==="evento"?"atos":"canal",{grupo:g,canal:null})})),
     verTudo:()=>detReceita(f), rotuloTudo:"Abrir composição"}));
 
-  if(S.frete==="produto" && t.freteCob)
-    wf.append(lnCascata({dot:"var(--blue)",nome:"Frete cobrado do cliente",
-      sub:"entrou junto, mas fora do preço do produto",val:t.freteCob,base:R}));
   const pf=porFamilia(f);
   wf.append(lnCascata({dot:"var(--amber)",nome:"Custo do produto",sub:"o que saiu do estoque",
     val:t.cogs,neg:true,base:R,
@@ -829,11 +844,11 @@ function vResumo(){
       .map(([k,v])=>({n:(FICON[k]||"📦")+" "+k+(v.q?` · ${num(v.q)} un`:""),v:v.c})),
     verTudo:()=>detProdutos(f),rotuloTudo:"Ver modelo a modelo"}));
 
-  if(S.frete!=="liquido" && t.fretePago){
-    const pt=porTransportadora(f);
-    wf.append(lnCascata({dot:"var(--purple)",nome:"Frete que eu paguei",
-      sub:t.freteCob?`cobrei ${brl(t.freteCob)} dos clientes`:"nada cobrado do cliente",
-      val:t.fretePago,neg:true,base:R,
+  if(t.fretePago || t.freteCob){
+    const pt=porTransportadora(f), fl=t.fretePago-t.freteCob;
+    wf.append(lnCascata({dot:"var(--purple)",nome:"Frete",
+      sub:`paguei ${brl(t.fretePago)} · cobrei ${brl(t.freteCob)} dos clientes`,
+      val:Math.abs(fl),neg:fl>0,base:R,
       itens:Object.entries(pt).sort((a,b)=>b[1].p-a[1].p).map(([k,v])=>({
         n:(k==="Correios"?"📮 ":k==="Melhor Envio"?"🚚 ":"📦 ")+k+` · ${v.n} envios`, v:v.p,
         t:brl(v.p)+`  (${v.c-v.p<0?"−":"+"}${brl(Math.abs(v.c-v.p))})`,
@@ -869,7 +884,7 @@ function vResumo(){
     wf.append(lnCascata({dot:"var(--tx2)",nome:"Custos fixos",
       sub:`${brl(mensal)}/mês rateados no período`,val:fx,neg:true,base:R,
       itens:D.fixos.filter(x=>x.ativo!==false)
-        .map(x=>({n:x.item+" · "+Math.round(diasDeVigencia(x,f))+" dias", v:fixoDe(x,f)}))
+        .map(x=>({n:x.item+(x.so_dias_uteis?" · só dia útil":" · "+Math.round(diasDeVigencia(x,f))+" dias"), v:fixoDe(x,f)}))
         .sort((a,b)=>b.v-a.v),
       verTudo:()=>{S.view="custos";window.scrollTo(0,0);render();},rotuloTudo:"Editar custos fixos"}));
   }
@@ -1162,22 +1177,22 @@ function vCanal(){
   h.innerHTML=`<div class="lbl">${GICON[g]} ${GNOME[g]} <span class="tag">${f[2]}</span></div>
     <div class="big">${brl(t.receita)}</div>
     <div class="meta">
-      <span class="pill ${sobra<0?"neg":"pos"}">sobrou ${brl(sobra)} · ${pct(t.caixa?sobra/t.caixa*100:0)}</span>
+      <span class="pill ${sobra<0?"neg":"pos"}">sobrou ${brl(sobra)} · ${pct(t.prod?sobra/t.prod*100:0)}</span>
       <span class="pill">${num(t.n)} pedidos</span>
       <span class="pill">ticket ${brl2(t.ticket)}</span>
     </div>`;
   hero.append(h);
-  const R=t.caixa||1, wf=el("div","wf");
-  wf.append(lnCascata({dot:"var(--blue)",nome:"Receita",val:t.receita,base:R}));
-  if(S.frete==="produto" && t.freteCob)
-    wf.append(lnCascata({dot:"var(--blue)",nome:"Frete cobrado do cliente",val:t.freteCob,base:R}));
+  const R=t.prod||1, wf=el("div","wf");
+  wf.append(lnCascata({dot:"var(--blue)",nome:"Receita",sub:"produtos, sem o frete",val:t.receita,base:R}));
   if(t.cogs) wf.append(lnCascata({dot:"var(--amber)",nome:"Custo do produto",val:t.cogs,neg:true,base:R,
     itens:Object.entries(porFamilia(f)).sort((a,b)=>b[1].c-a[1].c)
       .map(([k,v])=>({n:(FICON[k]||"📦")+" "+k,v:v.c})),verTudo:()=>detProdutos(f)}));
-  if(t.fretePago && S.frete!=="liquido") wf.append(lnCascata({dot:"var(--purple)",nome:"Frete que eu paguei",
-    sub:`cobrei ${brl(t.freteCob)}`,val:t.fretePago,neg:true,base:R,
-    itens:Object.entries(porTransportadora(f)).sort((a,b)=>b[1].p-a[1].p)
-      .map(([k,v])=>({n:k,v:v.p})),verTudo:()=>detFrete(f)}));
+  if(t.fretePago || t.freteCob){ const fl=t.fretePago-t.freteCob;
+    wf.append(lnCascata({dot:"var(--purple)",nome:"Frete",
+    sub:`paguei ${brl(t.fretePago)} · cobrei ${brl(t.freteCob)}`,val:Math.abs(fl),neg:fl>0,base:R,
+    itens:Object.entries(porTransportadora(f)).sort((a,b)=>(b[1].p-b[1].c)-(a[1].p-a[1].c))
+      .map(([k,v])=>({n:k+` · ${v.n} envios`,v:v.p-v.c,t:(v.p-v.c>0?"−":"+")+brl(Math.abs(v.p-v.c)),
+                      cls:v.p-v.c>0?"neg":"pos"})),verTudo:()=>detFrete(f)})); }
   if(t.embalagem) wf.append(lnCascata({dot:"var(--tx3)",nome:"Embalagem",
     sub:`${brl2(embVal("pedido_online"))} a caixa pequena${t.nCopo?` · ${num(t.nCopo)} com copo a ${brl2(embVal("pedido_online_copo"))}`:""}`,
     val:t.embalagem,neg:true,base:R}));
@@ -1187,10 +1202,10 @@ function vCanal(){
   if(t.ads) wf.append(lnCascata({dot:"var(--red)",nome:"Anúncios (ADs)",
     sub:`ROAS ${t.roas.toFixed(1)}x · CAC ${brl2(t.cac)}`,val:t.ads,neg:true,base:R}));
   if(fxc>0) wf.append(lnCascata({dot:"var(--tx2)",nome:"Custos fixos",
-    sub:`parte deste canal · ${pct(receitaDoPeriodo(f)?t.caixa/receitaDoPeriodo(f)*100:0)} do faturamento`,
+    sub:`parte deste canal · ${pct(receitaDoPeriodo(f)?t.prod/receitaDoPeriodo(f)*100:0)} do faturamento`,
     val:fxc,neg:true,base:R,
     itens:D.fixos.filter(x=>x.ativo!==false).sort((a,b)=>(+b.valor_mensal||0)-(+a.valor_mensal||0))
-      .map(x=>({n:x.item, v:(+x.valor_mensal||0)*(fxc/Math.max(1,somaFixos()))})),
+      .map(x=>({n:x.item, v:fixoDe(x,f)*(fxc/Math.max(0.01,fixoNoPeriodo(f)))})),
     verTudo:()=>irPara("custos"), rotuloTudo:"Editar custos fixos"}));
   wf.append(lnCascata({dot:"var(--green)",nome:"Sobrou",sub:"depois de tudo, ajudante inclusive",
     val:sobra,base:R,total:true}));
@@ -1960,8 +1975,7 @@ function render(){
   const f=faixa();
   const V=VIEW(S.view)||VIEWS.resumo;
   $("#tit").textContent = S.view==="canal"&&S.grupo ? GNOME[S.grupo] : V.t;
-  const modo = S.frete==="produto"?" · só produto" : S.frete==="liquido"?" · líquido de frete" : "";
-  $("#sub").textContent = f[2] + (S.canal?" · "+(NOME[S.canal]||S.canal):"") + modo;
+  $("#sub").textContent = f[2] + (S.canal?" · "+(NOME[S.canal]||S.canal):"");
   document.title = "Painel Brochevique";
   const cp=$("#chipsPer"); cp.innerHTML="";
   [["hoje","Hoje"],["7d","7 dias"],["30d","30 dias"],["mes","Este mês"],["tudo","Tudo"]].forEach(([v,l])=>{
